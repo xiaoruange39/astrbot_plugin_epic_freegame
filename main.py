@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import html
 from datetime import datetime
@@ -273,8 +274,9 @@ class EpicFreeGamePlugin(Star):
         # 共享 HTTP 会话（延迟初始化，复用 TCP 连接池）
         self._http_session: aiohttp.ClientSession | None = None
 
-    async def initialize(self):
-        """插件初始化，启动定时任务"""
+    @filter.on_astrbot_loaded()
+    async def on_loaded(self, event: AstrMessageEvent):
+        """AstrBot 初始化完成后启动定时任务"""
         if self.cron_time:
             self._start_cron_task()
             logger.info(f"Epic 免费游戏定时推送已启动，Cron: {self.cron_time}")
@@ -383,13 +385,16 @@ class EpicFreeGamePlugin(Star):
 
     async def _render_games(self, games: list[dict]) -> str:
         """将游戏数据渲染为图片，返回图片 URL"""
-        # 转义 HTML 特殊字符
-        for game in games:
+        # 深拷贝以避免污染原始数据（缓存对比需要未转义的原始数据）
+        render_games = copy.deepcopy(games)
+
+        # 转义 HTML 特殊字符（仅在拷贝上操作）
+        for game in render_games:
             game["title"] = html.escape(game.get("title", ""))
             game["description"] = html.escape(game.get("description", ""))
 
         # 正在免费的排前面，即将免费的排后面
-        all_games = sorted(games, key=lambda g: (not g.get("is_free_now"), g.get("free_start_at", 0)))
+        all_games = sorted(render_games, key=lambda g: (not g.get("is_free_now"), g.get("free_start_at", 0)))
 
         update_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
