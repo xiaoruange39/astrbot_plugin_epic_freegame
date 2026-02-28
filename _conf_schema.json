@@ -1,0 +1,33 @@
+{
+    "api_url": {
+        "description": "Epic 免费游戏 API 地址",
+        "type": "string",
+        "hint": "60s API 官方提供的 API 地址，例如 https://60s.viki.moe/v2/epic",
+        "obvious_hint": true,
+        "default": "https://60s.viki.moe/v2/epic"
+    },
+    "cron_time": {
+        "description": "定时推送时间 (Cron 表达式)",
+        "type": "string",
+        "hint": "标准 5 位 Cron 表达式，例如 '0 10 * * *' 表示每天 10:00 推送。为空则不启用定时推送。",
+        "default": ""
+    },
+    "enable_cache": {
+        "description": "是否启用缓存（避免重复推送）",
+        "type": "bool",
+        "hint": "启用后，定时推送时会对比缓存，仅在数据更新时推送",
+        "default": true
+    },
+    "dark_mode": {
+        "description": "深色模式",
+        "type": "bool",
+        "hint": "开启深色模式（深蓝色调液态玻璃风格），关闭则为浅色模式（白色液态玻璃风格）",
+        "default": true
+    },
+    "push_targets": {
+        "description": "白名单群组UMO列表",
+        "type": "list",
+        "hint": "可在对应群内使用 /sid 获取，要把UMO写完整。",
+        "default": []
+    }
+}
