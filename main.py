@@ -268,16 +268,27 @@ class EpicFreeGamePlugin(Star):
         # 定时任务句柄
         self._cron_task: asyncio.Task | None = None
 
+        # 尝试在初始化时启动定时任务（应对 Web UI 修改配置后的热重载场景）
+        # 热重载时 __init__ 是在运行的异步上下文中调用的，而 on_loaded 生命周期事件不会再触发
+        try:
+            loop = asyncio.get_running_loop()
+            if self.cron_time:
+                self._start_cron_task()
+                logger.info(f"Epic 免费游戏定时推送已在热重载时随配置更新启动, Cron: {self.cron_time}")
+        except RuntimeError:
+            # 冷启动阶段可能尚未初始化好运行中循环，交予 on_loaded 生命周期触发
+            pass
+
         # 共享 HTTP 会话（延迟初始化，复用 TCP 连接池）
         self._http_session: aiohttp.ClientSession | None = None
 
     @filter.on_astrbot_loaded()
     async def on_loaded(self):
-        """AstrBot 初始化完成后启动定时任务"""
-        if self.cron_time:
+        """AstrBot 首次初始化完成后启动定时任务"""
+        if self.cron_time and (self._cron_task is None or self._cron_task.done()):
             self._start_cron_task()
-            logger.info(f"Epic 免费游戏定时推送已启动，Cron: {self.cron_time}")
-        else:
+            logger.info(f"Epic 免费游戏定时推送已随框架启动激活, Cron: {self.cron_time}")
+        elif not self.cron_time:
             logger.info("未配置 Cron 表达式，Epic 免费游戏定时推送未启用")
 
     # ==================== 指令 ====================
