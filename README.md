@@ -1,3 +1,5 @@
+![:name](https://count.getloli.com/@astrbot_plugin_epic_freegame?name=astrbot_plugin_epic_freegame&theme=green&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto&prefix=0)
+
 # 🎮 astrbot_plugin_epic_freegame
 
 > Epic Games 每周免费游戏推送插件（AstrBot 版）
