@@ -21,7 +21,7 @@
 在 AstrBot WebUI 插件市场中搜索 `astrbot_plugin_epic_freegame` 安装，或通过仓库地址安装：
 
 ```
-https://github.com/xxmod/astrbot_plugin_epic_freegame
+https://github.com/xiaoruange39/astrbot_plugin_epic_freegame
 ```
 
 ### 依赖
@@ -73,8 +73,6 @@ https://github.com/xxmod/astrbot_plugin_epic_freegame
 | 指令 | 说明 |
 |------|------|
 | `/epic` | 查询当前 Epic 免费游戏，渲染为图片发送 |
-| `/epic_sub` | 订阅定时推送（当前会话） |
-| `/epic_unsub` | 取消订阅定时推送 |
 
 ## 🎨 主题预览
 

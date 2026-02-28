@@ -5,6 +5,7 @@ import html
 from datetime import datetime
 from urllib.parse import urlparse
 import ipaddress
+import socket
 
 import aiohttp
 from croniter import croniter
@@ -234,9 +235,7 @@ class EpicFreeGamePlugin(Star):
 
     功能：
     1. /epic 指令：手动查询当前 Epic 免费游戏
-    2. 定时推送：根据 Cron 表达式自动推送到已订阅的会话
-    3. /epic_sub 指令：订阅定时推送
-    4. /epic_unsub 指令：取消订阅
+    2. 定时推送：根据 Cron 表达式自动推送到配置好的目标
     """
 
     # 备用 API 列表，依次尝试
@@ -266,11 +265,6 @@ class EpicFreeGamePlugin(Star):
 
         # 缓存文件路径
         self.cache_path = self.data_dir / "epic_free_cache.json"
-        # 订阅列表文件路径
-        self.sub_path = self.data_dir / "subscriptions.json"
-
-        # 订阅列表（存储 unified_msg_origin）
-        self.subscriptions: list[str] = self._load_subscriptions()
 
         # 定时任务句柄
         self._cron_task: asyncio.Task | None = None
@@ -308,41 +302,19 @@ class EpicFreeGamePlugin(Star):
             logger.error(f"获取 Epic 免费游戏信息失败: {e}")
             yield event.plain_result("获取 Epic 免费游戏信息失败，请稍后重试 😢")
 
-    @filter.command("epic_sub")
-    async def cmd_subscribe(self, event: AstrMessageEvent):
-        '''订阅 Epic 免费游戏定时推送'''
-        umo = event.unified_msg_origin
-
-        if umo in self.subscriptions:
-            yield event.plain_result("当前会话已订阅 Epic 免费游戏推送 ✅")
-            return
-
-        self.subscriptions.append(umo)
-        self._save_subscriptions()
-        yield event.plain_result("订阅成功！将在定时任务触发时自动推送 Epic 免费游戏信息 🎮✅")
-
-    @filter.command("epic_unsub")
-    async def cmd_unsubscribe(self, event: AstrMessageEvent):
-        '''取消订阅 Epic 免费游戏定时推送'''
-        umo = event.unified_msg_origin
-
-        if umo not in self.subscriptions:
-            yield event.plain_result("当前会话未订阅 Epic 免费游戏推送 ❌")
-            return
-
-        self.subscriptions.remove(umo)
-        self._save_subscriptions()
-        yield event.plain_result("已取消订阅 Epic 免费游戏推送 ❎")
-
     # ==================== 核心逻辑 ====================
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """获取共享的 HTTP 会话（延迟初始化）"""
-        if self._http_session is None or self._http_session.closed:
-            self._http_session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15)
-            )
-        return self._http_session
+        """获取共享的 HTTP 会话（延迟初始化，加锁防竞态）"""
+        if getattr(self, "_session_lock", None) is None:
+            self._session_lock = asyncio.Lock()
+            
+        async with self._session_lock:
+            if self._http_session is None or self._http_session.closed:
+                self._http_session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=15)
+                )
+            return self._http_session
 
     async def _fetch_games(self) -> list[dict] | None:
         """从 API 获取 Epic 免费游戏数据，支持备用 API 自动回退"""
@@ -396,9 +368,8 @@ class EpicFreeGamePlugin(Star):
         logger.info("所有 API 均未返回游戏数据")
         return None
 
-    @staticmethod
-    def _sanitize_cover_url(url: str) -> str:
-        """校验封面图 URL，防止 SSRF 攻击"""
+    async def _sanitize_cover_url(self, url: str) -> str:
+        """校验封面图 URL，防止 SSRF 攻击（包含 DNS 级防护）"""
         if not url or not isinstance(url, str):
             return ""
         try:
@@ -412,13 +383,18 @@ class EpicFreeGamePlugin(Star):
             hostname_lower = hostname.lower()
             if hostname_lower in blocked_hostnames or hostname_lower.endswith(".local"):
                 return ""
-            # 拒绝 IP 字面量的内网/回环/链路本地地址
+            # DNS 解析获取真实 IP，防假公网域名指向内网
             try:
-                ip = ipaddress.ip_address(hostname)
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                    return ""
-            except ValueError:
-                pass  # 不是 IP 地址，是普通域名，继续
+                loop = asyncio.get_running_loop()
+                addr_info = await loop.getaddrinfo(hostname, None)
+                for res in addr_info:
+                    ip_str = res[4][0]
+                    ip = ipaddress.ip_address(ip_str)
+                    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                        return ""
+            except Exception:
+                # 解析失败或无效记录，直接拒绝
+                return ""
             return url
         except Exception:
             return ""
@@ -428,15 +404,16 @@ class EpicFreeGamePlugin(Star):
         # 深拷贝以避免污染原始数据（缓存对比需要未转义的原始数据）
         render_games = copy.deepcopy(games)
 
-        # 转义所有文本字段（仅在拷贝上操作），防止 HTML 注入
+        # 转义所有文本字段（仅在拷贝上操作），防止 HTML/属性 注入
         for game in render_games:
             game["title"] = html.escape(str(game.get("title", "")))
             game["description"] = html.escape(str(game.get("description", "")))
             game["original_price_desc"] = html.escape(str(game.get("original_price_desc", "")))
             game["free_start"] = html.escape(str(game.get("free_start", "")))
             game["free_end"] = html.escape(str(game.get("free_end", "")))
-            # 校验封面图 URL，防止 SSRF
-            game["cover"] = self._sanitize_cover_url(game.get("cover", ""))
+            # 校验封面图 URL 并做引号转义，防止属性逃逸 SSRF+XSS
+            safe_cover = await self._sanitize_cover_url(game.get("cover", ""))
+            game["cover"] = html.escape(safe_cover, quote=True)
 
         # 正在免费的排前面，即将免费的排后面（类型归一化避免 TypeError）
         def _sort_key(g):
@@ -537,8 +514,8 @@ class EpicFreeGamePlugin(Star):
 
     async def _cron_push(self):
         """定时推送逻辑"""
-        # 合并配置中的推送目标和指令订阅的目标，去重
-        all_targets = list(dict.fromkeys(self.push_targets + self.subscriptions))
+        # 从配置中获取推送目标，去重
+        all_targets = list(dict.fromkeys(self.push_targets))
 
         if not all_targets:
             logger.info("没有推送目标，跳过 Epic 免费游戏推送")
@@ -552,9 +529,9 @@ class EpicFreeGamePlugin(Star):
             # 缓存对比（对列表项按稳定键排序后比较，避免仅因顺序变化触发误推送）
             if self.enable_cache:
                 last_data = self._load_cache()
-                # 按游戏标题排序后再序列化，确保顺序无关
+                # 按游戏标题和时间组合排序后再序列化，解决同名元素排列不唯一问题
                 def _cache_sort_key(g):
-                    return g.get("title", "")
+                    return f"{g.get('title', '')}_{g.get('free_start_at', 0)}"
                 new_data_str = json.dumps(
                     sorted(games, key=_cache_sort_key),
                     ensure_ascii=False, sort_keys=True
@@ -573,13 +550,27 @@ class EpicFreeGamePlugin(Star):
             # 渲染图片
             image_url = await self._render_games(games)
 
-            # 推送到所有目标
-            for umo in all_targets:
-                try:
-                    chain = MessageChain().image(image_url)
-                    await self.context.send_message(umo, chain)
-                except Exception as e:
-                    logger.error(f"推送到 {umo} 失败: {e}")
+            # 推送到所有目标（采用并发执行和 Semaphore 限流）
+            semaphore = asyncio.Semaphore(5)
+
+            async def send_to_target(umo_target: str):
+                async with semaphore:
+                    try:
+                        # 使用框架标准的富媒体消息体构造方式
+                        if image_url.startswith("http"):
+                            # 假设 MessageChain 支持 url_image
+                            chain = MessageChain().url_image(image_url)
+                        else:
+                            # 官方文档示例中的本地图片构造方式
+                            chain = MessageChain().file_image(image_url)
+                            
+                        await self.context.send_message(umo_target, chain)
+                    except Exception as e:
+                        logger.error(f"推送到 {umo_target} 失败: {e}")
+
+            if all_targets:
+                tasks = [send_to_target(umo) for umo in all_targets]
+                await asyncio.gather(*tasks)
 
             # 更新缓存
             if self.enable_cache:
@@ -592,25 +583,6 @@ class EpicFreeGamePlugin(Star):
             raise  # 向上抛出，让 _cron_loop 的指数退避重试机制生效
 
     # ==================== 持久化 ====================
-
-    def _load_subscriptions(self) -> list[str]:
-        """加载订阅列表"""
-        if self.sub_path.exists():
-            try:
-                with open(self.sub_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return data if isinstance(data, list) else []
-            except Exception as e:
-                logger.warning(f"读取订阅列表失败: {e}")
-        return []
-
-    def _save_subscriptions(self):
-        """保存订阅列表"""
-        try:
-            with open(self.sub_path, "w", encoding="utf-8") as f:
-                json.dump(self.subscriptions, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"保存订阅列表失败: {e}")
 
     def _load_cache(self) -> list | None:
         """加载缓存数据"""
