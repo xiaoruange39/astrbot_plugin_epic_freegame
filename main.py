@@ -367,8 +367,10 @@ class EpicFreeGamePlugin(Star):
                     data = await resp.json()
 
                 games = data if isinstance(data, list) else data.get("data", [])
+                # 轻量数据清洗：仅保留 dict 类型的有效游戏条目
+                games = [g for g in games if isinstance(g, dict)]
                 if not games:
-                    logger.info(f"API {api_url} 未返回游戏数据，尝试下一个")
+                    logger.info(f"API {api_url} 未返回有效游戏数据，尝试下一个")
                     continue
 
                 return games
@@ -475,18 +477,18 @@ class EpicFreeGamePlugin(Star):
         self._cron_task = asyncio.create_task(self._cron_loop())
 
     async def _cron_loop(self):
-        """Cron 循环"""
+        """Cron 循环：调度与重试解耦"""
         try:
             cron = croniter(self.cron_time)
         except (ValueError, KeyError) as e:
             logger.error(f"无效的 Cron 表达式 '{self.cron_time}': {e}")
             return
 
-        error_retry_delay = 30  # 初始重试延迟（秒）
-        max_retry_delay = 3600  # 最大重试延迟（秒）
+        max_retries = 5  # 每个调度点最大重试次数
 
         while True:
             try:
+                # === 调度阶段：等待下一个 Cron 时间点 ===
                 next_time = cron.get_next(datetime)
                 now = datetime.now()
                 wait_seconds = (next_time - now).total_seconds()
@@ -495,18 +497,29 @@ class EpicFreeGamePlugin(Star):
                     logger.info(f"Epic 定时推送：下次执行时间 {next_time.strftime('%Y-%m-%d %H:%M:%S')}，等待 {wait_seconds:.0f} 秒")
                     await asyncio.sleep(wait_seconds)
 
-                await self._cron_push()
-                # 成功执行后重置重试延迟
-                error_retry_delay = 30
+                # === 执行阶段：在当前调度点内重试 ===
+                retry_delay = 30  # 初始重试延迟（秒）
+                max_retry_delay = 600  # 最大重试延迟（秒）
+
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        await self._cron_push()
+                        break  # 成功，跳出重试循环，推进到下一个 cron 时间
+                    except Exception as e:
+                        if attempt < max_retries:
+                            logger.error(f"Epic 定时推送第 {attempt} 次尝试失败: {e}，{retry_delay} 秒后重试")
+                            await asyncio.sleep(retry_delay)
+                            retry_delay = min(retry_delay * 2, max_retry_delay)
+                        else:
+                            logger.error(f"Epic 定时推送第 {attempt} 次尝试失败: {e}，已达最大重试次数，等待下一个调度点")
 
             except asyncio.CancelledError:
                 logger.info("Epic 定时推送任务已取消")
                 break
             except Exception as e:
-                logger.error(f"Epic 定时推送任务执行出错: {e}，{error_retry_delay} 秒后重试")
-                await asyncio.sleep(error_retry_delay)
-                # 指数退避：每次失败后延迟翻倍，但不超过最大值
-                error_retry_delay = min(error_retry_delay * 2, max_retry_delay)
+                # cron.get_next() 或其他意外错误
+                logger.error(f"Epic 定时推送调度出错: {e}，60 秒后重试")
+                await asyncio.sleep(60)
 
     async def _cron_push(self):
         """定时推送逻辑"""
