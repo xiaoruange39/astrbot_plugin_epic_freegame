@@ -270,6 +270,9 @@ class EpicFreeGamePlugin(Star):
         # 定时任务句柄
         self._cron_task: asyncio.Task | None = None
 
+        # 共享 HTTP 会话（延迟初始化，复用 TCP 连接池）
+        self._http_session: aiohttp.ClientSession | None = None
+
     async def initialize(self):
         """插件初始化，启动定时任务"""
         if self.cron_time:
@@ -327,6 +330,14 @@ class EpicFreeGamePlugin(Star):
 
     # ==================== 核心逻辑 ====================
 
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """获取共享的 HTTP 会话（延迟初始化）"""
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)
+            )
+        return self._http_session
+
     async def _fetch_games(self) -> list[dict] | None:
         """从 API 获取 Epic 免费游戏数据，支持备用 API 自动回退"""
         # 构建尝试顺序：用户配置的 API 优先，然后是备用 API
@@ -342,26 +353,26 @@ class EpicFreeGamePlugin(Star):
             return None
 
         last_error = None
-        async with aiohttp.ClientSession() as session:
-            for api_url in apis_to_try:
-                try:
-                    async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                        if resp.status != 200:
-                            logger.warning(f"API {api_url} 请求失败，状态码: {resp.status}")
-                            continue
-                        data = await resp.json()
-
-                    games = data if isinstance(data, list) else data.get("data", [])
-                    if not games:
-                        logger.info(f"API {api_url} 未返回游戏数据，尝试下一个")
+        session = await self._get_session()
+        for api_url in apis_to_try:
+            try:
+                async with session.get(api_url) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"API {api_url} 请求失败，状态码: {resp.status}")
                         continue
+                    data = await resp.json()
 
-                    return games
-
-                except Exception as e:
-                    logger.warning(f"API {api_url} 请求出错: {e}")
-                    last_error = e
+                games = data if isinstance(data, list) else data.get("data", [])
+                if not games:
+                    logger.info(f"API {api_url} 未返回游戏数据，尝试下一个")
                     continue
+
+                return games
+
+            except Exception as e:
+                logger.warning(f"API {api_url} 请求出错: {e}")
+                last_error = e
+                continue
 
         if last_error:
             logger.error(f"所有 API 均请求失败，最后一个错误: {last_error}")
@@ -489,6 +500,7 @@ class EpicFreeGamePlugin(Star):
 
         except Exception as e:
             logger.error(f"Epic 定时推送执行出错: {e}")
+            raise  # 向上抛出，让 _cron_loop 的指数退避重试机制生效
 
     # ==================== 持久化 ====================
 
@@ -539,4 +551,9 @@ class EpicFreeGamePlugin(Star):
                 await self._cron_task
             except asyncio.CancelledError:
                 pass
+
+        # 关闭共享 HTTP 会话
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+
         logger.info("Epic 免费游戏插件已停用")
