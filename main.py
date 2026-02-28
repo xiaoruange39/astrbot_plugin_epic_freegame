@@ -197,7 +197,9 @@ HTML_TEMPLATE = '''
       <div class="game-status upcoming">即将推出，开始: {{ game.free_start }} ~ 结束: {{ game.free_end }}</div>
       {% endif %}
 
+      {% if game.cover %}
       <img class="game-cover" src="{{ game.cover }}" alt="cover" />
+      {% endif %}
 
       <div class="game-title">{{ game.title }}</div>
       <div class="game-desc">{{ game.description }}</div>
