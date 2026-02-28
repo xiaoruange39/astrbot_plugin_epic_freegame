@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import html
 from datetime import datetime
 
@@ -9,7 +8,7 @@ from croniter import croniter
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.event import MessageChain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger, AstrBotConfig
 
 
@@ -225,13 +224,6 @@ HTML_TEMPLATE = '''
 '''
 
 
-@register(
-    "astrbot_plugin_epic_freegame",
-    "xxmod",
-    "Epic 每周免费游戏推送，支持定时推送和手动查询",
-    "1.0.0",
-    "https://github.com/xxmod/astrbot_plugin_epic_freegame"
-)
 class EpicFreeGamePlugin(Star):
     """Epic Games 每周免费游戏推送插件
 
@@ -263,14 +255,14 @@ class EpicFreeGamePlugin(Star):
         else:
             self.push_targets: list[str] = []
 
-        # 数据目录（持久化数据应存储于 data 目录下）
-        self.data_dir = os.path.join("data", "astrbot_plugin_epic_freegame")
-        os.makedirs(self.data_dir, exist_ok=True)
+        # 数据目录（使用框架提供的 StarTools.get_data_dir()）
+        self.data_dir = StarTools.get_data_dir("astrbot_plugin_epic_freegame")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # 缓存文件路径
-        self.cache_path = os.path.join(self.data_dir, "epic_free_cache.json")
+        self.cache_path = self.data_dir / "epic_free_cache.json"
         # 订阅列表文件路径
-        self.sub_path = os.path.join(self.data_dir, "subscriptions.json")
+        self.sub_path = self.data_dir / "subscriptions.json"
 
         # 订阅列表（存储 unified_msg_origin）
         self.subscriptions: list[str] = self._load_subscriptions()
@@ -336,29 +328,47 @@ class EpicFreeGamePlugin(Star):
     # ==================== 核心逻辑 ====================
 
     async def _fetch_games(self) -> list[dict] | None:
-        """从 API 获取 Epic 免费游戏数据"""
-        if not self.api_url:
-            logger.warning("未配置 API 地址")
+        """从 API 获取 Epic 免费游戏数据，支持备用 API 自动回退"""
+        # 构建尝试顺序：用户配置的 API 优先，然后是备用 API
+        apis_to_try = []
+        if self.api_url:
+            apis_to_try.append(self.api_url)
+        for api in self.FALLBACK_APIS:
+            if api not in apis_to_try:
+                apis_to_try.append(api)
+
+        if not apis_to_try:
+            logger.warning("未配置 API 地址且无可用备用 API")
             return None
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(self.api_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status != 200:
-                        logger.error(f"API 请求失败，状态码: {resp.status}")
-                        return None
-                    data = await resp.json()
-        except Exception as e:
-            logger.error(f"拉取 Epic 免费游戏信息失败: {e}")
-            raise
+        last_error = None
+        async with aiohttp.ClientSession() as session:
+            for api_url in apis_to_try:
+                try:
+                    async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"API {api_url} 请求失败，状态码: {resp.status}")
+                            continue
+                        data = await resp.json()
 
-        games = data if isinstance(data, list) else data.get("data", [])
+                    games = data if isinstance(data, list) else data.get("data", [])
+                    if not games:
+                        logger.info(f"API {api_url} 未返回游戏数据，尝试下一个")
+                        continue
 
-        if not games:
-            logger.info("未获取到任何游戏数据")
-            return None
+                    return games
 
-        return games
+                except Exception as e:
+                    logger.warning(f"API {api_url} 请求出错: {e}")
+                    last_error = e
+                    continue
+
+        if last_error:
+            logger.error(f"所有 API 均请求失败，最后一个错误: {last_error}")
+            raise last_error
+
+        logger.info("所有 API 均未返回游戏数据")
+        return None
 
     async def _render_games(self, games: list[dict]) -> str:
         """将游戏数据渲染为图片，返回图片 URL"""
@@ -408,6 +418,9 @@ class EpicFreeGamePlugin(Star):
             logger.error(f"无效的 Cron 表达式 '{self.cron_time}': {e}")
             return
 
+        error_retry_delay = 30  # 初始重试延迟（秒）
+        max_retry_delay = 3600  # 最大重试延迟（秒）
+
         while True:
             try:
                 next_time = cron.get_next(datetime)
@@ -419,14 +432,17 @@ class EpicFreeGamePlugin(Star):
                     await asyncio.sleep(wait_seconds)
 
                 await self._cron_push()
+                # 成功执行后重置重试延迟
+                error_retry_delay = 30
 
             except asyncio.CancelledError:
                 logger.info("Epic 定时推送任务已取消")
                 break
             except Exception as e:
-                logger.error(f"Epic 定时推送任务执行出错: {e}")
-                # 出错后等待 60 秒再重试
-                await asyncio.sleep(60)
+                logger.error(f"Epic 定时推送任务执行出错: {e}，{error_retry_delay} 秒后重试")
+                await asyncio.sleep(error_retry_delay)
+                # 指数退避：每次失败后延迟翻倍，但不超过最大值
+                error_retry_delay = min(error_retry_delay * 2, max_retry_delay)
 
     async def _cron_push(self):
         """定时推送逻辑"""
@@ -478,7 +494,7 @@ class EpicFreeGamePlugin(Star):
 
     def _load_subscriptions(self) -> list[str]:
         """加载订阅列表"""
-        if os.path.exists(self.sub_path):
+        if self.sub_path.exists():
             try:
                 with open(self.sub_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -497,7 +513,7 @@ class EpicFreeGamePlugin(Star):
 
     def _load_cache(self) -> list | None:
         """加载缓存数据"""
-        if os.path.exists(self.cache_path):
+        if self.cache_path.exists():
             try:
                 with open(self.cache_path, "r", encoding="utf-8") as f:
                     return json.load(f)
