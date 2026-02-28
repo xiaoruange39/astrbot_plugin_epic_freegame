@@ -425,12 +425,22 @@ class EpicFreeGamePlugin(Star):
         # 正在免费的排前面，即将免费的排后面（类型归一化避免 TypeError）
         def _sort_key(g):
             free_start = g.get("free_start_at", 0)
-            # 统一转为 int，避免 str/int/None 混合类型比较报错
+            # 统一转为数值时间戳，支持 int、ISO 8601 字符串、None 等多种类型
+            if free_start is None:
+                return (not g.get("is_free_now", False), 0)
             try:
-                free_start = int(free_start) if free_start is not None else 0
+                # 尝试直接转 int（Unix 时间戳）
+                return (not g.get("is_free_now", False), int(free_start))
             except (ValueError, TypeError):
-                free_start = 0
-            return (not g.get("is_free_now", False), free_start)
+                pass
+            try:
+                # 尝试解析 ISO 8601 格式（如 "2023-10-12T15:00:00.000Z"）
+                dt_str = str(free_start).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(dt_str)
+                return (not g.get("is_free_now", False), int(dt.timestamp()))
+            except (ValueError, TypeError):
+                pass
+            return (not g.get("is_free_now", False), 0)
 
         all_games = sorted(render_games, key=_sort_key)
 
