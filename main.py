@@ -366,7 +366,14 @@ class EpicFreeGamePlugin(Star):
                         continue
                     data = await resp.json()
 
-                games = data if isinstance(data, list) else data.get("data", [])
+                # 安全解析：确保 data 类型正确，避免 AttributeError
+                if isinstance(data, list):
+                    games = data
+                elif isinstance(data, dict):
+                    games = data.get("data", [])
+                else:
+                    logger.warning(f"API {api_url} 返回了意外的数据类型: {type(data).__name__}")
+                    games = []
                 # 轻量数据清洗：仅保留 dict 类型的有效游戏条目
                 games = [g for g in games if isinstance(g, dict)]
                 if not games:
@@ -397,14 +404,19 @@ class EpicFreeGamePlugin(Star):
             # 仅允许 https 协议
             if parsed.scheme != "https":
                 return ""
-            # 拒绝内网/回环/链路本地地址
             hostname = parsed.hostname or ""
+            # 拒绝常见本地/内网回环域名
+            blocked_hostnames = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+            hostname_lower = hostname.lower()
+            if hostname_lower in blocked_hostnames or hostname_lower.endswith(".local"):
+                return ""
+            # 拒绝 IP 字面量的内网/回环/链路本地地址
             try:
                 ip = ipaddress.ip_address(hostname)
                 if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                     return ""
             except ValueError:
-                pass  # 不是 IP 地址，是域名，继续
+                pass  # 不是 IP 地址，是普通域名，继续
             return url
         except Exception:
             return ""
