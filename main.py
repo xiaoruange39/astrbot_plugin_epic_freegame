@@ -275,7 +275,7 @@ class EpicFreeGamePlugin(Star):
         self._http_session: aiohttp.ClientSession | None = None
 
     @filter.on_astrbot_loaded()
-    async def on_loaded(self, event: AstrMessageEvent):
+    async def on_loaded(self):
         """AstrBot 初始化完成后启动定时任务"""
         if self.cron_time:
             self._start_cron_task()
