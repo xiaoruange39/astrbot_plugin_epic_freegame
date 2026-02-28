@@ -5,7 +5,6 @@ import html
 from datetime import datetime
 from urllib.parse import urlparse
 import ipaddress
-import socket
 
 import aiohttp
 from croniter import croniter
@@ -383,14 +382,15 @@ class EpicFreeGamePlugin(Star):
             hostname_lower = hostname.lower()
             if hostname_lower in blocked_hostnames or hostname_lower.endswith(".local"):
                 return ""
-            # DNS 解析获取真实 IP，防假公网域名指向内网
+            # DNS 解析获取真实 IP，防假公网域名指向内网 (预防 DNS Rebinding)
             try:
                 loop = asyncio.get_running_loop()
                 addr_info = await loop.getaddrinfo(hostname, None)
                 for res in addr_info:
                     ip_str = res[4][0]
                     ip = ipaddress.ip_address(ip_str)
-                    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    # 严防全系非公网通信地址
+                    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified or not getattr(ip, 'is_global', True):
                         return ""
             except Exception:
                 # 解析失败或无效记录，直接拒绝
@@ -437,11 +437,8 @@ class EpicFreeGamePlugin(Star):
 
         all_games = sorted(render_games, key=_sort_key)
 
-        update_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-
         render_data = {
             "all_games": all_games,
-            "update_time": update_time,
             "theme": "dark" if self.dark_mode else "light",
         }
 
@@ -552,8 +549,10 @@ class EpicFreeGamePlugin(Star):
 
             # 推送到所有目标（采用并发执行和 Semaphore 限流）
             semaphore = asyncio.Semaphore(5)
+            success_count = 0
 
             async def send_to_target(umo_target: str):
+                nonlocal success_count
                 async with semaphore:
                     try:
                         # 使用框架标准的富媒体消息体构造方式
@@ -565,6 +564,7 @@ class EpicFreeGamePlugin(Star):
                             chain = MessageChain().file_image(image_url)
                             
                         await self.context.send_message(umo_target, chain)
+                        success_count += 1
                     except Exception as e:
                         logger.error(f"推送到 {umo_target} 失败: {e}")
 
@@ -572,11 +572,15 @@ class EpicFreeGamePlugin(Star):
                 tasks = [send_to_target(umo) for umo in all_targets]
                 await asyncio.gather(*tasks)
 
-            # 更新缓存
+            # 仅在有成功发送时更新缓存，或者本身没有目标配置时（逻辑防空）
             if self.enable_cache:
-                self._save_cache(games)
-
-            logger.info("Epic 免费游戏推送完成")
+                if success_count > 0:
+                    self._save_cache(games)
+                    logger.info("Epic 免费游戏推送完成（已更新缓存）")
+                else:
+                    logger.warning("所有配置的推送目标均发送失败，本次不更新缓存，等待下个周期重试。")
+            else:
+                logger.info("Epic 免费游戏推送完成")
 
         except Exception as e:
             logger.error(f"Epic 定时推送执行出错: {e}")
