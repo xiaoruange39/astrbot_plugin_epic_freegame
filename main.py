@@ -3,11 +3,13 @@ import copy
 import json
 import html
 from datetime import datetime
+from urllib.parse import urlparse
+import ipaddress
 
 import aiohttp
 from croniter import croniter
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event import MessageChain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger, AstrBotConfig
@@ -302,7 +304,7 @@ class EpicFreeGamePlugin(Star):
 
         except Exception as e:
             logger.error(f"获取 Epic 免费游戏信息失败: {e}")
-            yield event.plain_result(f"获取 Epic 免费游戏信息失败，请稍后重试 😢\n错误: {e}")
+            yield event.plain_result("获取 Epic 免费游戏信息失败，请稍后重试 😢")
 
     @filter.command("epic_sub")
     async def cmd_subscribe(self, event: AstrMessageEvent):
@@ -383,18 +385,54 @@ class EpicFreeGamePlugin(Star):
         logger.info("所有 API 均未返回游戏数据")
         return None
 
+    @staticmethod
+    def _sanitize_cover_url(url: str) -> str:
+        """校验封面图 URL，防止 SSRF 攻击"""
+        if not url or not isinstance(url, str):
+            return ""
+        try:
+            parsed = urlparse(url)
+            # 仅允许 https 协议
+            if parsed.scheme != "https":
+                return ""
+            # 拒绝内网/回环/链路本地地址
+            hostname = parsed.hostname or ""
+            try:
+                ip = ipaddress.ip_address(hostname)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return ""
+            except ValueError:
+                pass  # 不是 IP 地址，是域名，继续
+            return url
+        except Exception:
+            return ""
+
     async def _render_games(self, games: list[dict]) -> str:
         """将游戏数据渲染为图片，返回图片 URL"""
         # 深拷贝以避免污染原始数据（缓存对比需要未转义的原始数据）
         render_games = copy.deepcopy(games)
 
-        # 转义 HTML 特殊字符（仅在拷贝上操作）
+        # 转义所有文本字段（仅在拷贝上操作），防止 HTML 注入
         for game in render_games:
-            game["title"] = html.escape(game.get("title", ""))
-            game["description"] = html.escape(game.get("description", ""))
+            game["title"] = html.escape(str(game.get("title", "")))
+            game["description"] = html.escape(str(game.get("description", "")))
+            game["original_price_desc"] = html.escape(str(game.get("original_price_desc", "")))
+            game["free_start"] = html.escape(str(game.get("free_start", "")))
+            game["free_end"] = html.escape(str(game.get("free_end", "")))
+            # 校验封面图 URL，防止 SSRF
+            game["cover"] = self._sanitize_cover_url(game.get("cover", ""))
 
-        # 正在免费的排前面，即将免费的排后面
-        all_games = sorted(render_games, key=lambda g: (not g.get("is_free_now"), g.get("free_start_at", 0)))
+        # 正在免费的排前面，即将免费的排后面（类型归一化避免 TypeError）
+        def _sort_key(g):
+            free_start = g.get("free_start_at", 0)
+            # 统一转为 int，避免 str/int/None 混合类型比较报错
+            try:
+                free_start = int(free_start) if free_start is not None else 0
+            except (ValueError, TypeError):
+                free_start = 0
+            return (not g.get("is_free_now", False), free_start)
+
+        all_games = sorted(render_games, key=_sort_key)
 
         update_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -474,11 +512,20 @@ class EpicFreeGamePlugin(Star):
             if not games:
                 return
 
-            # 缓存对比
+            # 缓存对比（对列表项按稳定键排序后比较，避免仅因顺序变化触发误推送）
             if self.enable_cache:
                 last_data = self._load_cache()
-                new_data_str = json.dumps(games, ensure_ascii=False, sort_keys=True)
-                last_data_str = json.dumps(last_data, ensure_ascii=False, sort_keys=True) if last_data else None
+                # 按游戏标题排序后再序列化，确保顺序无关
+                def _cache_sort_key(g):
+                    return g.get("title", "")
+                new_data_str = json.dumps(
+                    sorted(games, key=_cache_sort_key),
+                    ensure_ascii=False, sort_keys=True
+                )
+                last_data_str = json.dumps(
+                    sorted(last_data, key=_cache_sort_key),
+                    ensure_ascii=False, sort_keys=True
+                ) if last_data else None
 
                 if last_data_str == new_data_str:
                     logger.info("Epic 免费游戏数据未更新，跳过推送")
