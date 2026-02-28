@@ -21,7 +21,7 @@
     "dark_mode": {
         "description": "深色模式",
         "type": "bool",
-        "hint": "开启深色模式（深蓝色调液态玻璃风格），关闭则为浅色模式（白色液态玻璃风格）",
+        "hint": "开启深色模式，关闭则为浅色模式",
         "default": true
     },
     "push_targets": {
