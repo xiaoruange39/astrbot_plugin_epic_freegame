@@ -54,19 +54,11 @@ https://github.com/xiaoruange39/astrbot_plugin_epic_freegame
 
 ### 🎯 推送目标配置
 
-有两种方式配置推送目标：
-
-**方式一：WebUI 配置（推荐）**
+**WebUI 配置（推荐）**
 
 在 `push_targets`（白名单群组 UMO 列表）中添加目标群组的 UMO。
 
 > 💡 **如何获取 UMO？** 在目标群聊中发送 `/sid`，即可获取该群的完整 UMO。
-
-**方式二：指令订阅**
-
-在目标群聊中发送 `/epic_sub` 进行订阅。
-
-> 两种方式可以同时使用，推送时会自动合并去重。
 
 ## 📖 指令列表
 
