@@ -1,4 +1,5 @@
 import asyncio
+import re
 import copy
 import json
 import html
@@ -28,7 +29,7 @@ HTML_TEMPLATE = '''
   body {
     font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif;
     padding: 24px;
-    width: 660px;
+    width: 600px;
   }
 
   /* ========== 浅色模式 ========== */
@@ -61,35 +62,35 @@ HTML_TEMPLATE = '''
   body.light .footer { color: #aaa; }
   body.light .empty-hint { color: #999; }
 
-  /* ========== 深色模式 ========== */
+  /* ========== 深色模式 (Steam 风格) ========== */
   body.dark {
-    background: linear-gradient(145deg, #0c0e1a, #141829, #1a1e35);
-    color: #d0d0d0;
+    background: linear-gradient(145deg, #171a21, #1b2838, #1e2d40);
+    color: #c7d5e0;
   }
 
   body.dark .header h1 {
-    color: #5cf;
+    color: #66c0f4;
   }
 
   body.dark .game-card {
-    background: rgba(100, 120, 180, 0.08);
-    border: 1px solid rgba(120, 150, 220, 0.15);
-    border-top: 1px solid rgba(140, 170, 240, 0.25);
+    background: rgba(30, 50, 70, 0.45);
+    border: 1px solid rgba(102, 192, 244, 0.12);
+    border-top: 1px solid rgba(102, 192, 244, 0.2);
     box-shadow:
-      0 2px 20px rgba(0, 0, 0, 0.4),
-      0 8px 40px rgba(0, 0, 0, 0.2),
-      inset 0 1px 0 rgba(160, 180, 255, 0.1);
+      0 2px 16px rgba(0, 0, 0, 0.5),
+      0 8px 32px rgba(0, 0, 0, 0.25),
+      inset 0 1px 0 rgba(102, 192, 244, 0.08);
   }
 
   body.dark .game-status.free { color: #66bb6a; }
   body.dark .game-status.upcoming { color: #ffa726; }
-  body.dark .game-title { color: #eee; }
-  body.dark .game-desc { color: #9aa; }
-  body.dark .price-original { color: #667; }
+  body.dark .game-title { color: #e5e5e5; }
+  body.dark .game-desc { color: #8f98a0; }
+  body.dark .price-original { color: #626f78; }
   body.dark .price-current-free { color: #66bb6a; }
   body.dark .price-current-upcoming { color: #ffa726; }
-  body.dark .footer { color: #445; }
-  body.dark .empty-hint { color: #556; }
+  body.dark .footer { color: #4c6070; }
+  body.dark .empty-hint { color: #4c6070; }
 
   /* ========== 通用布局 ========== */
   .header {
@@ -105,7 +106,7 @@ HTML_TEMPLATE = '''
   .game-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 20px;
+    gap: 28px;
   }
 
   /* 液态玻璃卡片 */
@@ -418,7 +419,10 @@ class EpicFreeGamePlugin(Star):
         # 转义所有文本字段（仅在拷贝上操作），防止 HTML/属性 注入
         for game in render_games:
             game["title"] = html.escape(str(game.get("title", "")))
-            game["description"] = html.escape(str(game.get("description", "")))
+            # 清除 BBCode 标签（如 [b]...[/b]）
+            raw_desc = str(game.get("description", ""))
+            clean_desc = re.sub(r'\[/?[a-zA-Z0-9]+\]', '', raw_desc)
+            game["description"] = html.escape(clean_desc)
             game["original_price_desc"] = html.escape(str(game.get("original_price_desc", "")))
             game["free_start"] = html.escape(str(game.get("free_start", "")))
             game["free_end"] = html.escape(str(game.get("free_end", "")))
@@ -455,7 +459,7 @@ class EpicFreeGamePlugin(Star):
 
         options = {
             "full_page": True,
-            "viewport_width": 660,
+            "viewport_width": 600,
             "device_scale_factor_level": "ultra",
         }
 
