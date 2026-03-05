@@ -92,3 +92,4 @@ MIT
 ## 👤 作者
 
 - **xiaoruange39**
+- **[QQ群](https://qm.qq.com/q/8kdJ2Bzf6S)**
