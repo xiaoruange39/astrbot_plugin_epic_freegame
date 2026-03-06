@@ -243,6 +243,7 @@ class EpicFreeGamePlugin(Star):
         self.cron_time: str = config.get("cron_time", "")
         self.enable_cache: bool = config.get("enable_cache", True)
         self.dark_mode: bool = config.get("dark_mode", True)
+        self.show_loading_message: bool = config.get("show_loading_message", True)
 
         # 从配置中读取推送目标列表
         push_targets_raw = config.get("push_targets", [])
@@ -289,7 +290,8 @@ class EpicFreeGamePlugin(Star):
     @filter.command("epic")
     async def cmd_epic(self, event: AstrMessageEvent):
         '''查询当前 Epic 免费游戏'''
-        yield event.plain_result("正在获取 Epic 免费游戏信息，请稍候... 🎮")
+        if self.show_loading_message:
+            yield event.plain_result("正在获取 Epic 免费游戏信息，请稍候... 🎮")
 
         try:
             games = await self._fetch_games()
