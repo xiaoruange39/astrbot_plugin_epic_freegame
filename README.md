@@ -40,6 +40,7 @@ https://github.com/xiaoruange39/astrbot_plugin_epic_freegame
 | `cron_time` | string | 定时推送 Cron 表达式，为空则不启用 | 空 |
 | `enable_cache` | bool | 启用缓存对比，避免重复推送 | `true` |
 | `dark_mode` | bool | 深色模式开关 | `true` |
+| `show_loading_message` | bool | 手动 `/epic` 时是否显示“正在获取”提示 | `true` |
 | `push_targets` | list | 白名单群组 UMO 列表 | `[]` |
 
 ### 🕐 Cron 表达式示例
