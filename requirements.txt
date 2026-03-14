@@ -1,2 +1,5 @@
-aiohttp
+aiohttp[speedups]
 croniter
+brotli
+Brotli
+brotli-python

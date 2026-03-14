@@ -299,9 +299,14 @@ class EpicFreeGamePlugin(Star):
                 yield event.plain_result("未获取到任何游戏数据 😢")
                 return
 
-            # 渲染为图片
-            image_url = await self._render_games(games)
-            yield event.image_result(image_url)
+            try:
+                # 尝试渲染为图片
+                image_url = await self._render_games(games)
+                yield event.image_result(image_url)
+            except Exception as render_err:
+                logger.warning(f"Epic 免费游戏图片渲染失败，切换为文本模式: {render_err}")
+                text_result = self._format_games_as_text(games)
+                yield event.plain_result(f"【⚠️ 渲染服务器忙，已为你切换为文本模式】\n\n{text_result}")
 
         except Exception as e:
             logger.error(f"获取 Epic 免费游戏信息失败: {e}")
@@ -337,9 +342,15 @@ class EpicFreeGamePlugin(Star):
 
         last_error = None
         session = await self._get_session()
+        # 强制使用 identity (无压缩) 以彻底解决 Brotli 解码问题。
+        # 即使 server 忽略此头，identity 也是最通用的。
+        headers = {
+            "Accept-Encoding": "identity",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         for api_url in apis_to_try:
             try:
-                async with session.get(api_url) as resp:
+                async with session.get(api_url, headers=headers) as resp:
                     if resp.status != 200:
                         logger.warning(f"API {api_url} 请求失败，状态码: {resp.status}")
                         continue
@@ -463,6 +474,29 @@ class EpicFreeGamePlugin(Star):
             options=options,
         )
         return image_url
+
+    def _format_games_as_text(self, games: list[dict]) -> str:
+        """将游戏数据格式化为纯文本，作为渲染失败时的兜底方案"""
+        lines = ["🎮 Epic 免费游戏列表", ""]
+        for game in games:
+            title = game.get("title", "未知游戏")
+            is_free = game.get("is_free_now", False)
+            start = game.get("free_start", "")
+            end = game.get("free_end", "")
+            price = game.get("original_price_desc", "免费")
+            
+            if is_free:
+                status = f"✅ 正在免费 (至 {end})"
+            else:
+                status = f"⏳ 即将推出 ({start} ~ {end})"
+            
+            lines.append(f"【{title}】")
+            lines.append(f"状态: {status}")
+            lines.append(f"原价: {price}")
+            lines.append("--------------------")
+        
+        lines.append("Tip: 图片渲染服务稳定后将恢复图片展示。")
+        return "\n".join(lines)
 
     # ==================== 定时任务 ====================
 
