@@ -6,6 +6,11 @@
 
 通过 [60s API](https://60s.viki.moe/) 获取 Epic 每周免费游戏信息，渲染为精美卡片图片并推送到群聊，支持深色 / 浅色双主题。
 
+<p align="center">
+  <img src="https://picui.ogmua.cn/s1/2026/03/15/69b6bd9581fb0.webp" width="450" />
+  <img src="https://picui.ogmua.cn/s1/2026/03/15/69b6bd956b95b.webp" width="450" />
+</p>
+
 ## ✨ 功能
 
 - 📋 **手动查询** — 发送 `/epic` 即可查看当前 Epic 免费游戏
