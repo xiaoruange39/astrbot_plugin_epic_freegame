@@ -1,7 +1,7 @@
 name: astrbot_plugin_epic_freegame
 display_name: Epic 免费游戏推送
 desc: 获取 Epic 每周免费游戏信息，支持定时推送和指令查询，通过 60s API 获取数据并渲染为精美图片发送。
-version: v1.0.4
+version: v1.0.5
 author: xiaoruange39
 repo: https://github.com/xiaoruange39/astrbot_plugin_epic_freegame
 

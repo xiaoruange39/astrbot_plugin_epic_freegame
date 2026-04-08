@@ -3,6 +3,8 @@ import re
 import copy
 import json
 import html
+import shutil
+from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 import ipaddress
@@ -14,6 +16,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event import MessageChain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger, AstrBotConfig
+import astrbot.api.message_components as Comp
 
 
 # ==================== HTML 模板 ====================
@@ -300,9 +303,9 @@ class EpicFreeGamePlugin(Star):
                 return
 
             try:
-                # 尝试渲染为图片
-                image_url = await self._render_games(games)
-                yield event.image_result(image_url)
+                # 尝试渲染为图片（返回插件数据目录下的本地文件路径）
+                image_path = await self._render_games(games)
+                yield event.chain_result([Comp.Image.fromFileSystem(image_path)])
             except Exception as render_err:
                 logger.warning(f"Epic 免费游戏图片渲染失败，切换为文本模式: {render_err}")
                 text_result = self._format_games_as_text(games)
@@ -416,8 +419,19 @@ class EpicFreeGamePlugin(Star):
         except Exception:
             return ""
 
+    def _cleanup_old_renders(self):
+        """清理插件数据目录中旧的渲染临时图片"""
+        try:
+            for f in self.data_dir.glob("epic_render_*"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"清理旧渲染图片失败: {e}")
+
     async def _render_games(self, games: list[dict]) -> str:
-        """将游戏数据渲染为图片，返回图片 URL"""
+        """将游戏数据渲染为图片，返回图片本地路径（保存在插件数据目录下）"""
         # 深拷贝以避免污染原始数据（缓存对比需要未转义的原始数据）
         render_games = copy.deepcopy(games)
 
@@ -468,12 +482,33 @@ class EpicFreeGamePlugin(Star):
             "device_scale_factor_level": "ultra",
         }
 
-        image_url = await self.html_render(
+        # 清理上一次的渲染临时图片
+        self._cleanup_old_renders()
+
+        # 使用 return_url=False 获取本地文件路径
+        raw_path = await self.html_render(
             HTML_TEMPLATE,
             render_data,
+            return_url=False,
             options=options,
         )
-        return image_url
+
+        # 将渲染结果迁移到插件专属数据目录，规范化临时文件存储位置
+        raw_file = Path(raw_path)
+        suffix = raw_file.suffix or ".png"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest_path = self.data_dir / f"epic_render_{timestamp}{suffix}"
+        try:
+            shutil.move(str(raw_file), str(dest_path))
+        except Exception:
+            # move 失败时尝试 copy + 删除源文件
+            shutil.copy2(str(raw_file), str(dest_path))
+            try:
+                raw_file.unlink()
+            except Exception:
+                pass
+
+        return str(dest_path)
 
     def _format_games_as_text(self, games: list[dict]) -> str:
         """将游戏数据格式化为纯文本，作为渲染失败时的兜底方案"""
@@ -587,8 +622,8 @@ class EpicFreeGamePlugin(Star):
 
             logger.info(f"Epic 免费游戏数据已更新，正在推送到 {len(all_targets)} 个会话...")
 
-            # 渲染图片
-            image_url = await self._render_games(games)
+            # 渲染图片（返回插件数据目录下的本地文件路径）
+            image_path = await self._render_games(games)
 
             # 推送到所有目标（采用并发执行和 Semaphore 限流）
             semaphore = asyncio.Semaphore(5)
@@ -598,14 +633,8 @@ class EpicFreeGamePlugin(Star):
                 nonlocal success_count
                 async with semaphore:
                     try:
-                        # 使用框架标准的富媒体消息体构造方式
-                        if image_url.startswith("http"):
-                            # 假设 MessageChain 支持 url_image
-                            chain = MessageChain().url_image(image_url)
-                        else:
-                            # 官方文档示例中的本地图片构造方式
-                            chain = MessageChain().file_image(image_url)
-                            
+                        # 使用官方 Comp.Image.fromFileSystem 发送本地图片
+                        chain = [Comp.Image.fromFileSystem(image_path)]
                         await self.context.send_message(umo_target, chain)
                         success_count += 1
                     except Exception as e:
