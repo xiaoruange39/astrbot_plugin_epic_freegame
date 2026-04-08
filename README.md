@@ -6,7 +6,7 @@
 
 通过 [60s API](https://60s.viki.moe/) 获取 Epic 每周免费游戏信息，渲染为精美卡片图片并推送到群聊，支持深色 / 浅色双主题。
 
-![Preview](https://free.boltp.com/2026/04/08/69d63505b4bca.webp) 
+![Preview](https://picui.ogmua.cn/s1/2026/04/08/69d635ecb8e32.webp) 
 
 ## ✨ 功能
 
