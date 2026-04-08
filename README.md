@@ -77,17 +77,6 @@ https://github.com/xiaoruange39/astrbot_plugin_epic_freegame
 
 通过 WebUI 中的 `dark_mode` 开关一键切换。
 
-## 📝 更新日志
-
-### v1.0.0
-
-- 从 Koishi 插件迁移至 AstrBot 平台
-- 使用 AstrBot 内置 HTML 渲染，超高清输出
-- 深色 / 浅色双主题切换
-- 新增白名单群组 UMO 配置
-- 新增订阅管理功能
-- 智能缓存，避免重复推送
-
 ## 📄 License
 
 MIT
