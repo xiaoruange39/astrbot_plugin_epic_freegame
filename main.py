@@ -3,7 +3,10 @@ import re
 import copy
 import json
 import html
-import shutil
+import base64
+import io
+import subprocess
+import sys
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
@@ -18,6 +21,131 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger, AstrBotConfig
 import astrbot.api.message_components as Comp
 
+try:
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
+
+
+# ==================== 本地渲染：动态字体发现 ====================
+
+# 中文字体名关键字（优先级从高到低），用于从系统字体中筛选
+_CJK_FONT_KEYWORDS = [
+    "noto sans cjk", "noto sans sc", "source han sans",  # Noto / 思源
+    "microsoft yahei", "msyh",                            # 微软雅黑
+    "pingfang", "ping fang",                               # 苹方
+    "simhei", "heiti",                                     # 黑体
+    "wqy", "wenquanyi",                                    # 文泉驿
+    "droid sans fallback",                                 # Droid
+    "simsun", "songti",                                    # 宋体
+    "kaiti", "simkai",                                     # 楷体
+    "fang",                                                # 仿宋
+]
+
+# 系统字体扫描目录
+_FONT_SCAN_DIRS = [
+    "/usr/share/fonts",
+    "/usr/local/share/fonts",
+    "C:/Windows/Fonts",
+    "/System/Library/Fonts",
+    "/Library/Fonts",
+    Path.home() / ".local/share/fonts",
+    Path.home() / ".fonts",
+]
+
+
+def _discover_cjk_font() -> str | None:
+    """动态发现系统中可用的中文字体，优先使用 fc-list，回退到文件系统扫描"""
+    # 策略 1: 使用 fc-list（Linux/macOS 常用）
+    font = _discover_via_fc_list()
+    if font:
+        return font
+    # 策略 2: 扫描常见字体目录
+    return _discover_via_scan()
+
+
+def _discover_via_fc_list() -> str | None:
+    """通过 fc-list 命令查找中文字体"""
+    try:
+        result = subprocess.run(
+            ["fc-list", ":lang=zh", "--format=%{file}\n"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        candidates = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not candidates:
+            return None
+        # 按关键字优先级排序
+        for kw in _CJK_FONT_KEYWORDS:
+            for path in candidates:
+                if kw in path.lower():
+                    return path
+        # 没有匹配关键字，返回第一个可用的
+        return candidates[0]
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        return None
+
+
+def _discover_via_scan() -> str | None:
+    """扫描文件系统中常见字体目录，查找中文字体文件"""
+    font_files: list[str] = []
+    for scan_dir in _FONT_SCAN_DIRS:
+        scan_path = Path(scan_dir)
+        if not scan_path.is_dir():
+            continue
+        try:
+            for f in scan_path.rglob("*"):
+                if f.suffix.lower() in (".ttf", ".ttc", ".otf") and f.is_file():
+                    font_files.append(str(f))
+        except (PermissionError, OSError):
+            continue
+    if not font_files:
+        return None
+    # 按 CJK 关键字优先级筛选
+    for kw in _CJK_FONT_KEYWORDS:
+        for path in font_files:
+            if kw in path.lower():
+                return path
+    # 兜底：返回任意找到的字体（至少能渲染英文数字）
+    return font_files[0] if font_files else None
+
+
+def _wrap_text(text: str, font, max_width: int, max_lines: int = 2) -> list[str]:
+    """将文本按像素宽度自动换行，超出 max_lines 时截断并添加省略号"""
+    lines: list[str] = []
+    remaining = text.replace("\n", " ").replace("\r", "").strip()
+    if not remaining:
+        return []
+    while remaining and len(lines) < max_lines:
+        is_last = len(lines) == max_lines - 1
+        line = ""
+        consumed = 0
+        for i, char in enumerate(remaining):
+            candidate = line + char
+            if font.getlength(candidate) > max_width:
+                break
+            line = candidate
+            consumed = i + 1
+        else:
+            # 全部剩余文本都放得下
+            lines.append(remaining)
+            remaining = ""
+            break
+        if not line:
+            # 单字符就超宽，强制放入
+            line = remaining[0]
+            remaining = remaining[1:]
+        else:
+            remaining = remaining[consumed:]
+        if is_last and remaining:
+            while line and font.getlength(line + "…") > max_width:
+                line = line[:-1]
+            line += "…"
+        lines.append(line)
+    return lines
+
 
 # ==================== HTML 模板 ====================
 
@@ -30,7 +158,7 @@ HTML_TEMPLATE = '''
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif;
+    font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Droid Sans Fallback", "SimHei", "Helvetica Neue", Arial, sans-serif;
     padding: 24px;
     width: 600px;
   }
@@ -247,6 +375,7 @@ class EpicFreeGamePlugin(Star):
         self.enable_cache: bool = config.get("enable_cache", True)
         self.dark_mode: bool = config.get("dark_mode", True)
         self.show_loading_message: bool = config.get("show_loading_message", True)
+        self.render_mode: str = config.get("render_mode", "自动")
 
         # 从配置中读取推送目标列表
         push_targets_raw = config.get("push_targets", [])
@@ -264,6 +393,10 @@ class EpicFreeGamePlugin(Star):
 
         # 定时任务句柄
         self._cron_task: asyncio.Task | None = None
+
+        # 字体缓存（本地渲染用）
+        self._font_path: str | None = None
+        self._font_searched: bool = False
 
         # 尝试在初始化时启动定时任务（应对 Web UI 修改配置后的热重载场景）
         # 热重载时 __init__ 是在运行的异步上下文中调用的，而 on_loaded 生命周期事件不会再触发
@@ -303,13 +436,16 @@ class EpicFreeGamePlugin(Star):
                 return
 
             try:
-                # 尝试渲染为图片（返回插件数据目录下的本地文件路径）
-                image_path = await self._render_games(games)
-                yield event.chain_result([Comp.Image.fromFileSystem(image_path)])
+                image_comp = await self._render_games(games)
+                if image_comp is None:
+                    # 纯文字模式
+                    yield event.plain_result(self._format_games_as_text(games))
+                else:
+                    yield event.chain_result([image_comp])
             except Exception as render_err:
                 logger.warning(f"Epic 免费游戏图片渲染失败，切换为文本模式: {render_err}")
                 text_result = self._format_games_as_text(games)
-                yield event.plain_result(f"【⚠️ 渲染服务器忙，已为你切换为文本模式】\n\n{text_result}")
+                yield event.plain_result(f"【⚠️ 渲染失败，已切换为文本模式】\n\n{text_result}")
 
         except Exception as e:
             logger.error(f"获取 Epic 免费游戏信息失败: {e}")
@@ -419,57 +555,73 @@ class EpicFreeGamePlugin(Star):
         except Exception:
             return ""
 
-    def _cleanup_old_renders(self):
-        """清理插件数据目录中旧的渲染临时图片"""
-        try:
-            for f in self.data_dir.glob("epic_render_*"):
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"清理旧渲染图片失败: {e}")
+    # ==================== 渲染 ====================
 
-    async def _render_games(self, games: list[dict]) -> str:
-        """将游戏数据渲染为图片，返回图片本地路径（保存在插件数据目录下）"""
-        # 深拷贝以避免污染原始数据（缓存对比需要未转义的原始数据）
+    @staticmethod
+    def _game_sort_key(g: dict):
+        """排序键: 正在免费 > 即将免费，再按开始时间升序"""
+        free_start = g.get("free_start_at", 0)
+        if free_start is None:
+            return (not g.get("is_free_now", False), 0)
+        try:
+            return (not g.get("is_free_now", False), int(free_start))
+        except (ValueError, TypeError):
+            pass
+        try:
+            dt_str = str(free_start).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(dt_str)
+            return (not g.get("is_free_now", False), int(dt.timestamp()))
+        except (ValueError, TypeError):
+            pass
+        return (not g.get("is_free_now", False), 0)
+
+    def _find_font(self) -> str | None:
+        """动态查找系统中可用的中文字体（结果会缓存）"""
+        if self._font_searched:
+            return self._font_path
+        self._font_searched = True
+        self._font_path = _discover_cjk_font()
+        if self._font_path:
+            logger.info(f"本地渲染将使用字体: {self._font_path}")
+        else:
+            logger.warning("未找到可用的中文字体，本地渲染将不可用。建议安装: apt install fonts-noto-cjk")
+        return self._font_path
+
+    async def _render_games(self, games: list[dict]) -> Comp.Image | None:
+        """根据 render_mode 分发到对应渲染器，返回 Image 组件或 None（纯文字模式）"""
+        if self.render_mode == "纯文字":
+            return None  # 调用方会处理纯文字输出
+        elif self.render_mode == "本地渲染":
+            if not HAS_PILLOW:
+                raise RuntimeError("Pillow 未安装，无法使用本地渲染模式")
+            return await self._render_games_local(games)
+        elif self.render_mode == "API渲染":
+            return await self._render_games_api(games)
+        else:  # 自动: 先尝试 API，失败后回退本地
+            try:
+                return await self._render_games_api(games)
+            except Exception as e:
+                logger.warning(f"API 渲染失败，尝试切换到本地渲染: {e}")
+                if HAS_PILLOW:
+                    return await self._render_games_local(games)
+                raise
+
+    async def _render_games_api(self, games: list[dict]) -> Comp.Image:
+        """使用框架 html_render 渲染，返回 URL 形式的 Image 组件"""
         render_games = copy.deepcopy(games)
 
-        # 转义所有文本字段（仅在拷贝上操作），防止 HTML/属性 注入
         for game in render_games:
             game["title"] = html.escape(str(game.get("title", "")))
-            # 清除 BBCode 标签（如 [b]...[/b]）
             raw_desc = str(game.get("description", ""))
             clean_desc = re.sub(r'\[/?[a-zA-Z0-9]+\]', '', raw_desc)
             game["description"] = html.escape(clean_desc)
             game["original_price_desc"] = html.escape(str(game.get("original_price_desc", "")))
             game["free_start"] = html.escape(str(game.get("free_start", "")))
             game["free_end"] = html.escape(str(game.get("free_end", "")))
-            # 校验封面图 URL 并做引号转义，防止属性逃逸 SSRF+XSS
             safe_cover = await self._sanitize_cover_url(game.get("cover", ""))
             game["cover"] = html.escape(safe_cover, quote=True)
 
-        # 正在免费的排前面，即将免费的排后面（类型归一化避免 TypeError）
-        def _sort_key(g):
-            free_start = g.get("free_start_at", 0)
-            # 统一转为数值时间戳，支持 int、ISO 8601 字符串、None 等多种类型
-            if free_start is None:
-                return (not g.get("is_free_now", False), 0)
-            try:
-                # 尝试直接转 int（Unix 时间戳）
-                return (not g.get("is_free_now", False), int(free_start))
-            except (ValueError, TypeError):
-                pass
-            try:
-                # 尝试解析 ISO 8601 格式（如 "2023-10-12T15:00:00.000Z"）
-                dt_str = str(free_start).replace("Z", "+00:00")
-                dt = datetime.fromisoformat(dt_str)
-                return (not g.get("is_free_now", False), int(dt.timestamp()))
-            except (ValueError, TypeError):
-                pass
-            return (not g.get("is_free_now", False), 0)
-
-        all_games = sorted(render_games, key=_sort_key)
+        all_games = sorted(render_games, key=self._game_sort_key)
 
         render_data = {
             "all_games": all_games,
@@ -482,33 +634,265 @@ class EpicFreeGamePlugin(Star):
             "device_scale_factor_level": "ultra",
         }
 
-        # 清理上一次的渲染临时图片
-        self._cleanup_old_renders()
-
-        # 使用 return_url=False 获取本地文件路径
-        raw_path = await self.html_render(
+        # 使用 return_url=True（默认）获取框架托管的 HTTP URL
+        # QQ 适配器（NapCat/LLOneBot）要求通过 URL 传输富媒体
+        image_url = await self.html_render(
             HTML_TEMPLATE,
             render_data,
-            return_url=False,
+            return_url=True,
             options=options,
         )
 
-        # 将渲染结果迁移到插件专属数据目录，规范化临时文件存储位置
-        raw_file = Path(raw_path)
-        suffix = raw_file.suffix or ".png"
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest_path = self.data_dir / f"epic_render_{timestamp}{suffix}"
+        return Comp.Image.fromURL(image_url)
+
+    async def _download_cover_image(self, url: str):
+        """下载封面图并返回 PIL Image 对象"""
+        safe_url = await self._sanitize_cover_url(url)
+        if not safe_url:
+            return None
         try:
-            shutil.move(str(raw_file), str(dest_path))
+            session = await self._get_session()
+            async with session.get(safe_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.read()
+                return PILImage.open(io.BytesIO(data))
         except Exception:
-            # move 失败时尝试 copy + 删除源文件
-            shutil.copy2(str(raw_file), str(dest_path))
+            return None
+
+    async def _render_games_local(self, games: list[dict]) -> Comp.Image:
+        """使用 Pillow 本地渲染游戏卡片，返回 base64 编码的 Image 组件"""
+
+        fp = self._find_font()
+        if not fp:
+            raise RuntimeError("未找到可用的 CJK 字体，无法进行本地渲染")
+
+        # --- 缩放与字体 ---
+        S = 2  # 2x 高清缩放
+        f_header = ImageFont.truetype(fp, 24 * S)
+        f_status = ImageFont.truetype(fp, 13 * S)
+        f_title = ImageFont.truetype(fp, 18 * S)
+        f_desc = ImageFont.truetype(fp, 14 * S)
+        f_price = ImageFont.truetype(fp, 14 * S)
+        f_footer = ImageFont.truetype(fp, 11 * S)
+
+        # --- 布局常量 ---
+        W = 600 * S
+        PAD = 24 * S
+        GAP = 28 * S
+        CPAD = 14 * S
+        CRAD = 16 * S
+        CW = (W - PAD * 2 - GAP) // 2
+        TAW = CW - CPAD * 2
+        COV_W = TAW
+        COV_H = int(COV_W * 10 / 16)
+        COV_RAD = 10 * S
+
+        def _lh(font, extra_px=8):
+            bbox = font.getbbox("Ag中")
+            return (bbox[3] - bbox[1]) + extra_px * S
+
+        LH_S = _lh(f_status)
+        LH_T = _lh(f_title)
+        LH_D = _lh(f_desc, 6)
+        LH_P = _lh(f_price)
+
+        # --- 颜色 ---
+        dark = self.dark_mode
+        BG = (23, 26, 33) if dark else (232, 234, 240)
+        CARD_BG = (30, 45, 62) if dark else (245, 247, 252)
+        HDR_C = (102, 192, 244) if dark else (26, 26, 46)
+        TTL_C = (229, 229, 229) if dark else (17, 17, 17)
+        DSC_C = (143, 152, 160) if dark else (85, 85, 85)
+        FR_C = (102, 187, 106) if dark else (46, 125, 50)
+        UP_C = (255, 167, 38) if dark else (230, 81, 0)
+        PO_C = (98, 111, 120) if dark else (153, 153, 153)
+        FTR_C = (76, 96, 112) if dark else (170, 170, 170)
+
+        # --- 数据清洗（无需 HTML 转义） ---
+        cleaned: list[dict] = []
+        for game in games:
+            raw_desc = str(game.get("description", ""))
+            cleaned.append({
+                "title": str(game.get("title", "")),
+                "description": re.sub(r'\[/?[a-zA-Z0-9]+\]', '', raw_desc),
+                "original_price_desc": str(game.get("original_price_desc", "")),
+                "free_start": str(game.get("free_start", "")),
+                "free_end": str(game.get("free_end", "")),
+                "cover_url": game.get("cover", ""),
+                "is_free_now": game.get("is_free_now", False),
+                "free_start_at": game.get("free_start_at", 0),
+            })
+        all_games = sorted(cleaned, key=self._game_sort_key)
+
+        # --- 并发下载封面 ---
+        cover_imgs: dict[int, PILImage.Image] = {}
+        sem = asyncio.Semaphore(5)
+
+        async def _dl(idx: int, url: str):
+            async with sem:
+                img = await self._download_cover_image(url)
+                if img is not None:
+                    cover_imgs[idx] = img
+
+        dl_tasks = [_dl(i, g["cover_url"]) for i, g in enumerate(all_games) if g["cover_url"]]
+        if dl_tasks:
+            await asyncio.gather(*dl_tasks)
+
+        # --- 预计算每张卡片布局 ---
+        cards: list[dict] = []
+        for i, game in enumerate(all_games):
+            if game["is_free_now"]:
+                st = f"现在免费，结束日期: {game['free_end']}"
+            else:
+                st = f"即将推出，{game['free_start']} ~ {game['free_end']}"
+            s_lines = _wrap_text(st, f_status, TAW, 2)
+            t_lines = _wrap_text(game["title"], f_title, TAW, 2)
+            d_lines = _wrap_text(game["description"], f_desc, TAW, 3)
+            has_cov = i in cover_imgs
+
+            h = CPAD
+            h += len(s_lines) * LH_S + 8 * S
+            if has_cov:
+                h += COV_H + 10 * S
+            h += len(t_lines) * LH_T + 8 * S
+            if d_lines:
+                h += len(d_lines) * LH_D + 10 * S
+            h += LH_P + CPAD
+
+            cards.append({
+                "game": game, "s_lines": s_lines, "t_lines": t_lines,
+                "d_lines": d_lines, "has_cov": has_cov, "idx": i, "h": h,
+            })
+
+        # --- 空状态 ---
+        if not cards:
+            eh = 300 * S
+            img = PILImage.new("RGB", (W, eh), BG)
+            draw = ImageDraw.Draw(img)
+            hdr = "Epic免费游戏"
+            draw.text(((W - f_header.getlength(hdr)) / 2, PAD), hdr, fill=HDR_C, font=f_header)
+            hint = "暂无免费游戏数据 🎮"
+            draw.text(((W - f_title.getlength(hint)) / 2, eh // 2), hint, fill=DSC_C, font=f_title)
+            return self._pil_to_comp_image(img)
+
+        # --- 计算行高与总高 ---
+        rows: list[tuple] = []
+        for i in range(0, len(cards), 2):
+            left = cards[i]
+            right = cards[i + 1] if i + 1 < len(cards) else None
+            rh = left["h"] if right is None else max(left["h"], right["h"])
+            rows.append((left, right, rh))
+
+        hdr_bbox = f_header.getbbox("Ag中")
+        hdr_h = hdr_bbox[3] - hdr_bbox[1]
+        header_block = PAD + hdr_h + 22 * S
+
+        ftr_bbox = f_footer.getbbox("Ag中")
+        ftr_h = ftr_bbox[3] - ftr_bbox[1]
+        footer_block = 20 * S + ftr_h + PAD
+
+        grid_h = sum(rh for _, _, rh in rows) + GAP * max(0, len(rows) - 1)
+        total_h = header_block + grid_h + footer_block
+
+        # --- 创建画布并绘制 ---
+        img = PILImage.new("RGB", (W, total_h), BG)
+        draw = ImageDraw.Draw(img)
+
+        # 标题
+        hdr = "Epic免费游戏"
+        draw.text(((W - f_header.getlength(hdr)) / 2, PAD), hdr, fill=HDR_C, font=f_header)
+
+        y = header_block
+        for left, right, row_h in rows:
+            for col, cd in enumerate([left, right]):
+                if cd is None:
+                    continue
+                game = cd["game"]
+                x = PAD + col * (CW + GAP)
+
+                # 卡片背景（圆角矩形）
+                draw.rounded_rectangle(
+                    [(x, y), (x + CW, y + row_h)],
+                    radius=CRAD, fill=CARD_BG,
+                )
+
+                cx = x + CPAD
+                cy = y + CPAD
+
+                # 状态文本
+                sc = FR_C if game["is_free_now"] else UP_C
+                for ln in cd["s_lines"]:
+                    draw.text((cx, cy), ln, fill=sc, font=f_status)
+                    cy += LH_S
+                cy += 8 * S
+
+                # 封面
+                if cd["has_cov"]:
+                    cov = cover_imgs[cd["idx"]]
+                    cov_rgb = cov.convert("RGB").resize((COV_W, COV_H), PILImage.LANCZOS)
+                    # 创建圆角蒙版
+                    mask = PILImage.new("L", (COV_W, COV_H), 0)
+                    ImageDraw.Draw(mask).rounded_rectangle(
+                        [(0, 0), (COV_W - 1, COV_H - 1)], radius=COV_RAD, fill=255,
+                    )
+                    img.paste(cov_rgb, (cx, cy), mask)
+                    cov_rgb.close()
+                    mask.close()
+                    cy += COV_H + 10 * S
+
+                # 标题
+                for ln in cd["t_lines"]:
+                    draw.text((cx, cy), ln, fill=TTL_C, font=f_title)
+                    cy += LH_T
+                cy += 8 * S
+
+                # 描述
+                for ln in cd["d_lines"]:
+                    draw.text((cx, cy), ln, fill=DSC_C, font=f_desc)
+                    cy += LH_D
+                if cd["d_lines"]:
+                    cy += 10 * S
+
+                # 价格
+                if game["is_free_now"]:
+                    px = cx
+                    orig = game["original_price_desc"]
+                    if orig and orig != "0":
+                        ow = f_price.getlength(orig)
+                        draw.text((px, cy), orig, fill=PO_C, font=f_price)
+                        # 删除线
+                        line_y = cy + LH_P // 2
+                        draw.line([(px, line_y), (px + ow, line_y)], fill=PO_C, width=S)
+                        px += int(ow) + 8 * S
+                    draw.text((px, cy), "免费", fill=FR_C, font=f_price)
+                else:
+                    draw.text((cx, cy), game["original_price_desc"], fill=UP_C, font=f_price)
+
+            y += row_h + GAP
+
+        # 页脚
+        ftr = "Epic Games 周免游戏推送 · by xiaoruange39 · Powered by AstrBot"
+        ftr_w = f_footer.getlength(ftr)
+        draw.text(((W - ftr_w) / 2, total_h - PAD - ftr_h), ftr, fill=FTR_C, font=f_footer)
+
+        # 清理封面资源
+        for cov in cover_imgs.values():
             try:
-                raw_file.unlink()
+                cov.close()
             except Exception:
                 pass
 
-        return str(dest_path)
+        return self._pil_to_comp_image(img)
+
+    @staticmethod
+    def _pil_to_comp_image(img: "PILImage.Image") -> Comp.Image:
+        """将 PIL Image 转换为 base64 编码的 Comp.Image 组件"""
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90, optimize=True)
+        img.close()
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return Comp.Image(file=f"base64://{b64}")
 
     def _format_games_as_text(self, games: list[dict]) -> str:
         """将游戏数据格式化为纯文本，作为渲染失败时的兜底方案"""
@@ -622,8 +1006,8 @@ class EpicFreeGamePlugin(Star):
 
             logger.info(f"Epic 免费游戏数据已更新，正在推送到 {len(all_targets)} 个会话...")
 
-            # 渲染图片（返回插件数据目录下的本地文件路径）
-            image_path = await self._render_games(games)
+            # 渲染图片
+            image_comp = await self._render_games(games)
 
             # 推送到所有目标（采用并发执行和 Semaphore 限流）
             semaphore = asyncio.Semaphore(5)
@@ -633,8 +1017,7 @@ class EpicFreeGamePlugin(Star):
                 nonlocal success_count
                 async with semaphore:
                     try:
-                        # 使用官方 Comp.Image.fromFileSystem 发送本地图片
-                        chain = [Comp.Image.fromFileSystem(image_path)]
+                        chain = [image_comp]
                         await self.context.send_message(umo_target, chain)
                         success_count += 1
                     except Exception as e:

@@ -1,39 +1,46 @@
 {
     "api_url": {
-        "description": "Epic 免费游戏 API 地址",
+        "description": "API 地址",
         "type": "string",
-        "hint": "60s API 官方提供的 API 地址，例如 https://60s.viki.moe/v2/epic",
+        "hint": "Epic 免费游戏数据接口地址，默认使用 60s API。支持自动回退备用 API，一般无需修改。",
         "obvious_hint": true,
         "default": "https://60s.viki.moe/v2/epic"
     },
     "cron_time": {
-        "description": "定时推送时间 (Cron 表达式)",
+        "description": "定时推送",
         "type": "string",
-        "hint": "标准 5 位 Cron 表达式，例如 '0 10 * * *' 表示每天 10:00 推送。为空则不启用定时推送。",
+        "hint": "标准 5 位 Cron 表达式，例如 '0 10 * * *' 表示每天 10:00 推送。留空则不启用定时推送。",
         "default": ""
     },
     "enable_cache": {
-        "description": "是否启用缓存（避免重复推送）",
+        "description": "推送缓存（避免重复推送）",
         "type": "bool",
-        "hint": "启用后，定时推送时会对比缓存，仅在数据更新时推送",
+        "hint": "开启后，定时推送时会对比缓存，仅在数据更新时推送，避免重复推送。",
         "default": true
     },
     "dark_mode": {
         "description": "深色模式",
         "type": "bool",
-        "hint": "开启深色模式，关闭则为浅色模式",
+        "hint": "开启后使用 Steam 风格深色主题，关闭则为浅色模式。",
         "default": true
     },
+    "render_mode": {
+        "description": "渲染方式",
+        "type": "string",
+        "options": ["自动", "API渲染", "本地渲染", "纯文字"],
+        "hint": "自动: 优先 API 渲染，失败自动回退本地渲染；API渲染: 仅使用框架 html_render；本地渲染: 仅使用 Pillow 本地渲染（需系统安装中文字体）；纯文字: 不渲染图片，直接发送文字。",
+        "default": "自动"
+    },
     "show_loading_message": {
-        "description": "显示“正在获取”提示消息",
+        "description": "发送加载提示",
         "type": "bool",
-        "hint": "开启后，手动执行 /epic 时会先发送“正在获取 Epic 免费游戏信息，请稍候...”提示。",
+        "hint": "开启后，手动执行 /epic 指令时会先发送一条「正在获取」的提示消息。",
         "default": true
     },
     "push_targets": {
-        "description": "白名单群组UMO列表",
+        "description": "推送目标",
         "type": "list",
-        "hint": "可在对应群内使用 /sid 获取，要把UMO写完整。",
+        "hint": "定时推送的目标群组列表。在对应群内使用 /sid 获取 UMO，填写完整的 UMO 标识。",
         "default": []
     }
 }

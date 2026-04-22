@@ -1,2 +1,3 @@
 aiohttp[speedups]
 croniter
+Pillow
