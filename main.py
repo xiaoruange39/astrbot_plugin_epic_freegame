@@ -1017,8 +1017,9 @@ class EpicFreeGamePlugin(Star):
                 nonlocal success_count
                 async with semaphore:
                     try:
-                        chain = [image_comp]
-                        await self.context.send_message(umo_target, chain)
+                        msg_chain = MessageChain()
+                        msg_chain.chain = [image_comp]
+                        await self.context.send_message(umo_target, msg_chain)
                         success_count += 1
                     except Exception as e:
                         logger.error(f"推送到 {umo_target} 失败: {e}")
