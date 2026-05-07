@@ -112,14 +112,14 @@ def _discover_via_scan() -> str | None:
     return font_files[0] if font_files else None
 
 
-def _wrap_text(text: str, font, max_width: int, max_lines: int = 2) -> list[str]:
+def _wrap_text(text: str, font, max_width: int, max_lines: int | None = 2) -> list[str]:
     """将文本按像素宽度自动换行，超出 max_lines 时截断并添加省略号"""
     lines: list[str] = []
     remaining = text.replace("\n", " ").replace("\r", "").strip()
     if not remaining:
         return []
-    while remaining and len(lines) < max_lines:
-        is_last = len(lines) == max_lines - 1
+    while remaining and (max_lines is None or len(lines) < max_lines):
+        is_last = max_lines is not None and len(lines) == max_lines - 1
         line = ""
         consumed = 0
         for i, char in enumerate(remaining):
@@ -129,12 +129,10 @@ def _wrap_text(text: str, font, max_width: int, max_lines: int = 2) -> list[str]
             line = candidate
             consumed = i + 1
         else:
-            # 全部剩余文本都放得下
             lines.append(remaining)
             remaining = ""
             break
         if not line:
-            # 单字符就超宽，强制放入
             line = remaining[0]
             remaining = remaining[1:]
         else:
@@ -746,9 +744,9 @@ class EpicFreeGamePlugin(Star):
                 st = f"现在免费，结束日期: {game['free_end']}"
             else:
                 st = f"即将推出，{game['free_start']} ~ {game['free_end']}"
-            s_lines = _wrap_text(st, f_status, TAW, 2)
-            t_lines = _wrap_text(game["title"], f_title, TAW, 2)
-            d_lines = _wrap_text(game["description"], f_desc, TAW, 3)
+            s_lines = _wrap_text(st, f_status, TAW, None)
+            t_lines = _wrap_text(game["title"], f_title, TAW, None)
+            d_lines = _wrap_text(game["description"], f_desc, TAW, None)
             has_cov = i in cover_imgs
 
             h = CPAD
@@ -1006,8 +1004,8 @@ class EpicFreeGamePlugin(Star):
 
             logger.info(f"Epic 免费游戏数据已更新，正在推送到 {len(all_targets)} 个会话...")
 
-            # 渲染图片
-            image_comp = await self._render_games(games)
+            # 渲染消息内容
+            rendered = await self._render_games(games)
 
             # 推送到所有目标（采用并发执行和 Semaphore 限流）
             semaphore = asyncio.Semaphore(5)
@@ -1018,7 +1016,10 @@ class EpicFreeGamePlugin(Star):
                 async with semaphore:
                     try:
                         msg_chain = MessageChain()
-                        msg_chain.chain = [image_comp]
+                        if rendered is None:
+                            msg_chain.message(self._format_games_as_text(games))
+                        else:
+                            msg_chain.chain = [rendered]
                         await self.context.send_message(umo_target, msg_chain)
                         success_count += 1
                     except Exception as e:

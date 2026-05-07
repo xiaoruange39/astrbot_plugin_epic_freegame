@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.8] - 2026-05-07
+
+### Fixed
+- 修复了定时推送在纯文字模式下发送 `None` 的问题。
+- 优化了本地渲染的文本换行，避免标题和描述被过早省略。
+
 ## [v1.0.7] - 2026-05-04
 
 ### Fixed
