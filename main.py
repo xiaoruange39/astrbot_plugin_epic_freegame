@@ -147,6 +147,11 @@ def _wrap_text(text: str, font, max_width: int, max_lines: int | None = 2) -> li
 
 # ==================== HTML 模板 ====================
 
+# Epic 原模板在浏览器中的逻辑画布宽度。截图只取 body 元素，实际图片高度
+# 由浏览器根据卡片内容计算，不在代码中固定。
+T2I_BROWSER_WIDTH = 600
+T2I_INITIAL_VIEWPORT_HEIGHT = 800
+
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -156,21 +161,10 @@ HTML_TEMPLATE = '''
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
-  html {
-    width: 100%;
-  }
-
   body {
     font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Droid Sans Fallback", "SimHei", "Helvetica Neue", Arial, sans-serif;
-    padding: 32px;
-    width: 100%;
-    min-height: 100vh;
-  }
-
-  .page {
-    width: 100%;
-    max-width: 1020px;
-    margin: 0 auto;
+    padding: 24px;
+    width: 600px;
   }
 
   /* ========== 浅色模式 ========== */
@@ -228,36 +222,36 @@ HTML_TEMPLATE = '''
   /* ========== 通用布局 ========== */
   .header {
     text-align: center;
-    margin-bottom: 26px;
+    margin-bottom: 22px;
   }
 
   .header h1 {
-    font-size: 30px;
+    font-size: 24px;
     font-weight: 700;
   }
 
   .game-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 24px;
+    gap: 28px;
   }
 
   /* 液态玻璃卡片 */
   .game-card {
-    border-radius: 18px;
+    border-radius: 16px;
     min-width: 0;
     overflow: hidden;
-    padding: 18px;
+    padding: 14px;
     backdrop-filter: blur(40px) saturate(180%);
     -webkit-backdrop-filter: blur(40px) saturate(180%);
     transition: transform 0.2s ease;
   }
 
   .game-status {
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 700;
-    margin-bottom: 10px;
-    line-height: 1.45;
+    margin-bottom: 8px;
+    line-height: 1.4;
     overflow-wrap: anywhere;
   }
 
@@ -266,52 +260,52 @@ HTML_TEMPLATE = '''
     aspect-ratio: 16 / 10;
     object-fit: cover;
     display: block;
-    border-radius: 12px;
-    margin-bottom: 14px;
+    border-radius: 10px;
+    margin-bottom: 10px;
   }
 
   .game-title {
-    font-size: 22px;
+    font-size: 18px;
     font-weight: 700;
-    margin-bottom: 10px;
-    line-height: 1.45;
+    margin-bottom: 8px;
+    line-height: 1.4;
     overflow-wrap: anywhere;
   }
 
   .game-desc {
-    font-size: 17px;
-    line-height: 1.65;
-    margin-bottom: 14px;
+    font-size: 14px;
+    line-height: 1.7;
+    margin-bottom: 10px;
     overflow-wrap: anywhere;
   }
 
   .game-price {
-    font-size: 17px;
+    font-size: 14px;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
   }
 
   .price-original {
     text-decoration: line-through;
-    font-size: 16px;
+    font-size: 14px;
   }
 
   .price-current-free {
     font-weight: 700;
-    font-size: 18px;
+    font-size: 15px;
   }
 
   .price-current-upcoming {
     font-weight: 700;
-    font-size: 18px;
+    font-size: 15px;
   }
 
   .footer {
     text-align: center;
-    margin-top: 24px;
-    font-size: 13px;
+    margin-top: 20px;
+    font-size: 11px;
   }
 
   .empty-hint {
@@ -320,14 +314,9 @@ HTML_TEMPLATE = '''
     font-size: 14px;
     grid-column: 1 / -1;
   }
-  @media (max-width: 640px) {
-    body { padding: 18px; }
-    .game-grid { grid-template-columns: 1fr; gap: 20px; }
-  }
 </style>
 </head>
 <body class="{{ theme }}">
-  <main class="page">
   <div class="header">
     <h1>Epic免费游戏</h1>
   </div>
@@ -368,7 +357,6 @@ HTML_TEMPLATE = '''
   <div class="footer">
     Epic Games 周免游戏推送 · by xiaoruange39 · Powered by AstrBot
   </div>
-  </main>
 </body>
 </html>
 '''
@@ -628,7 +616,7 @@ class EpicFreeGamePlugin(Star):
                 raise
 
     async def _render_games_api(self, games: list[dict]) -> Comp.Image:
-        """使用框架 html_render 渲染，返回可直接发送的本地 Image 组件"""
+        """按 Epic 原浏览器布局截图，失败时回退到框架 T2I。"""
         render_games = copy.deepcopy(games)
 
         for game in render_games:
@@ -649,38 +637,189 @@ class EpicFreeGamePlugin(Star):
             "theme": "dark" if self.dark_mode else "light",
         }
 
-        options = {
-            "full_page": True,
-            "type": "png",
-            "device_scale_factor_level": "ultra",
-            "animations": "disabled",
-            "timeout": 30_000,
-        }
+        # 与 who_at_me 一致：优先让 Playwright 截取页面元素本身。viewport
+        # 只决定 CSS 排版环境，截图宽高由 body 的实际边界决定。
+        try:
+            render_result = await asyncio.wait_for(
+                self._render_html_with_browser(HTML_TEMPLATE, render_data),
+                timeout=45,
+            )
+            return self._image_component_from_t2i_result(render_result)
+        except Exception as exc:
+            logger.warning(
+                "浏览器元素截图失败，回退到 AstrBot T2I: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
-        # 参考日报插件：获取本地图片数据/路径，避免 OneBot 无法访问临时 URL。
-        render_result = await self.html_render(
-            HTML_TEMPLATE,
-            render_data,
-            return_url=False,
-            options=options,
-        )
+        last_error: Exception | None = None
+        for options in self._t2i_render_options():
+            try:
+                render_result = await self.html_render(
+                    HTML_TEMPLATE,
+                    render_data,
+                    return_url=False,
+                    options=options,
+                )
+                return self._image_component_from_t2i_result(
+                    render_result,
+                    crop_css_width=T2I_BROWSER_WIDTH,
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "AstrBot T2I 渲染失败，尝试下一策略: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
-        return self._image_component_from_t2i_result(render_result)
+        if last_error:
+            raise last_error
+        raise RuntimeError("T2I 渲染没有返回有效图片")
+
+    async def _render_html_with_browser(
+        self,
+        template: str,
+        data: dict,
+    ) -> bytes:
+        """在原 600px 浏览器画布中渲染，并按 body 的自然边界截图。"""
+        from jinja2 import Environment
+        from playwright.async_api import async_playwright
+
+        # 上游字段已逐项 html.escape，关闭 Jinja 二次转义。
+        html_text = Environment(autoescape=False).from_string(template).render(**data)
+        browser = None
+        async with async_playwright() as playwright:
+            try:
+                browser = await playwright.chromium.launch(
+                    args=["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"]
+                )
+                page = await browser.new_page(
+                    viewport={
+                        "width": T2I_BROWSER_WIDTH,
+                        "height": T2I_INITIAL_VIEWPORT_HEIGHT,
+                    },
+                    device_scale_factor=2,
+                )
+                await page.set_content(
+                    html_text,
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
+                await self._wait_for_browser_assets(page)
+                body = await page.query_selector("body")
+                if body is None:
+                    raise RuntimeError("浏览器页面中没有 body 元素")
+                return await body.screenshot(type="png", animations="disabled")
+            finally:
+                if browser is not None:
+                    await browser.close()
+
+    @staticmethod
+    def _t2i_render_options() -> list[dict]:
+        """兼容 AstrBot 本地/远程 T2I 的两级截图策略。"""
+        return [
+            {
+                "full_page": True,
+                "type": "png",
+                "device_scale_factor_level": "ultra",
+                "animations": "disabled",
+                "scale": "css",
+                "timeout": 50_000,
+            },
+            {
+                "full_page": True,
+                "type": "jpeg",
+                "quality": 80,
+                "device_scale_factor_level": "high",
+                "animations": "disabled",
+                "scale": "css",
+                "timeout": 100_000,
+            },
+        ]
+
+    @staticmethod
+    async def _wait_for_browser_assets(page) -> None:
+        """等待字体和封面图加载；单个资源失败不会阻塞整张截图。"""
+        try:
+            await page.evaluate(
+                """
+                async () => {
+                  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                  if (document.fonts && document.fonts.ready) {
+                    await Promise.race([
+                      document.fonts.ready.catch(() => {}),
+                      delay(1500),
+                    ]);
+                  }
+                  const images = Array.from(document.images || []);
+                  await Promise.race([
+                    Promise.all(images.map((img) => new Promise((resolve) => {
+                      if (img.complete) {
+                        resolve();
+                        return;
+                      }
+                      img.addEventListener("load", resolve, { once: true });
+                      img.addEventListener("error", resolve, { once: true });
+                    }))),
+                    delay(10000),
+                  ]);
+                }
+                """
+            )
+            await page.wait_for_timeout(300)
+        except Exception as exc:
+            logger.debug(
+                "等待浏览器资源加载失败，继续截图: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     @staticmethod
     def _has_image_magic(data: bytes) -> bool:
         return data.startswith(b"\x89PNG") or data.startswith(b"\xff\xd8")
 
+    @staticmethod
+    def _crop_t2i_to_browser_width(data: bytes, css_width: int) -> bytes:
+        """裁掉 T2I 默认 1280px 页面右侧区域，高度保持浏览器自然高度。"""
+        if not HAS_PILLOW or css_width <= 0:
+            return data
+        try:
+            with PILImage.open(io.BytesIO(data)) as image:
+                if image.width <= css_width:
+                    return data
+                cropped = image.crop((0, 0, css_width, image.height))
+                output = io.BytesIO()
+                if data.startswith(b"\xff\xd8"):
+                    cropped.convert("RGB").save(
+                        output,
+                        format="JPEG",
+                        quality=92,
+                        optimize=True,
+                    )
+                else:
+                    cropped.save(output, format="PNG")
+                return output.getvalue()
+        except Exception as exc:
+            logger.debug(
+                "T2I 右侧空白裁切跳过: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return data
+
     @classmethod
     def _image_component_from_t2i_result(
         cls,
         render_result: bytes | bytearray | str,
+        crop_css_width: int | None = None,
     ) -> Comp.Image:
         """Convert AstrBot T2I bytes/path output to a portable image component."""
         if isinstance(render_result, (bytes, bytearray)):
             image_data = bytes(render_result)
             if not cls._has_image_magic(image_data):
                 raise RuntimeError("T2I renderer returned invalid image bytes")
+            if crop_css_width is not None:
+                image_data = cls._crop_t2i_to_browser_width(
+                    image_data,
+                    crop_css_width,
+                )
             encoded = base64.b64encode(image_data).decode("ascii")
             return Comp.Image(file=f"base64://{encoded}")
 
@@ -694,7 +833,13 @@ class EpicFreeGamePlugin(Star):
                 raise RuntimeError("T2I renderer returned invalid base64 data") from exc
             if not cls._has_image_magic(image_data):
                 raise RuntimeError("T2I renderer returned non-image base64 data")
-            return Comp.Image(file=render_result)
+            if crop_css_width is not None:
+                image_data = cls._crop_t2i_to_browser_width(
+                    image_data,
+                    crop_css_width,
+                )
+            encoded = base64.b64encode(image_data).decode("ascii")
+            return Comp.Image(file=f"base64://{encoded}")
 
         if render_result.startswith(("http://", "https://")):
             logger.warning(
@@ -708,13 +853,20 @@ class EpicFreeGamePlugin(Star):
             raise RuntimeError(f"T2I renderer returned a missing image path: {render_result}")
 
         try:
-            with image_path.open("rb") as image_file:
-                header = image_file.read(10)
+            image_data = image_path.read_bytes()
         except OSError as exc:
             raise RuntimeError(f"Unable to read T2I image: {image_path}") from exc
 
-        if not cls._has_image_magic(header):
+        if not cls._has_image_magic(image_data):
             raise RuntimeError("T2I renderer returned a non-image file")
+
+        if crop_css_width is not None:
+            image_data = cls._crop_t2i_to_browser_width(
+                image_data,
+                crop_css_width,
+            )
+            encoded = base64.b64encode(image_data).decode("ascii")
+            return Comp.Image(file=f"base64://{encoded}")
 
         return Comp.Image.fromFileSystem(str(image_path.resolve()))
 
