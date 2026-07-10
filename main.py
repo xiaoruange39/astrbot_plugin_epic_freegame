@@ -149,16 +149,28 @@ def _wrap_text(text: str, font, max_width: int, max_lines: int | None = 2) -> li
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    width: 100%;
+  }
 
   body {
     font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Droid Sans Fallback", "SimHei", "Helvetica Neue", Arial, sans-serif;
     padding: 24px;
-    width: 600px;
+    width: 100%;
+    min-height: 100vh;
+  }
+
+  .page {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
   }
 
   /* ========== 浅色模式 ========== */
@@ -226,13 +238,14 @@ HTML_TEMPLATE = '''
 
   .game-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 28px;
   }
 
   /* 液态玻璃卡片 */
   .game-card {
     border-radius: 16px;
+    min-width: 0;
     overflow: hidden;
     padding: 14px;
     backdrop-filter: blur(40px) saturate(180%);
@@ -245,6 +258,7 @@ HTML_TEMPLATE = '''
     font-weight: 700;
     margin-bottom: 8px;
     line-height: 1.4;
+    overflow-wrap: anywhere;
   }
 
   .game-cover {
@@ -261,12 +275,14 @@ HTML_TEMPLATE = '''
     font-weight: 700;
     margin-bottom: 8px;
     line-height: 1.4;
+    overflow-wrap: anywhere;
   }
 
   .game-desc {
     font-size: 14px;
     line-height: 1.7;
     margin-bottom: 10px;
+    overflow-wrap: anywhere;
   }
 
   .game-price {
@@ -274,6 +290,7 @@ HTML_TEMPLATE = '''
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
   }
 
   .price-original {
@@ -303,9 +320,14 @@ HTML_TEMPLATE = '''
     font-size: 14px;
     grid-column: 1 / -1;
   }
+  @media (max-width: 560px) {
+    body { padding: 16px; }
+    .game-grid { grid-template-columns: 1fr; gap: 18px; }
+  }
 </style>
 </head>
 <body class="{{ theme }}">
+  <main class="page">
   <div class="header">
     <h1>Epic免费游戏</h1>
   </div>
@@ -346,6 +368,7 @@ HTML_TEMPLATE = '''
   <div class="footer">
     Epic Games 周免游戏推送 · by xiaoruange39 · Powered by AstrBot
   </div>
+  </main>
 </body>
 </html>
 '''
@@ -628,8 +651,10 @@ class EpicFreeGamePlugin(Star):
 
         options = {
             "full_page": True,
-            "viewport_width": 600,
-            "device_scale_factor_level": "ultra",
+            "type": "jpeg",
+            "quality": 90,
+            "animations": "disabled",
+            "timeout": 60_000,
         }
 
         # 使用 return_url=True（默认）获取框架托管的 HTTP URL
