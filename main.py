@@ -162,14 +162,14 @@ HTML_TEMPLATE = '''
 
   body {
     font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Droid Sans Fallback", "SimHei", "Helvetica Neue", Arial, sans-serif;
-    padding: 24px;
+    padding: 32px;
     width: 100%;
     min-height: 100vh;
   }
 
   .page {
     width: 100%;
-    max-width: 1200px;
+    max-width: 1020px;
     margin: 0 auto;
   }
 
@@ -228,36 +228,36 @@ HTML_TEMPLATE = '''
   /* ========== 通用布局 ========== */
   .header {
     text-align: center;
-    margin-bottom: 22px;
+    margin-bottom: 26px;
   }
 
   .header h1 {
-    font-size: 24px;
+    font-size: 30px;
     font-weight: 700;
   }
 
   .game-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 28px;
+    gap: 24px;
   }
 
   /* 液态玻璃卡片 */
   .game-card {
-    border-radius: 16px;
+    border-radius: 18px;
     min-width: 0;
     overflow: hidden;
-    padding: 14px;
+    padding: 18px;
     backdrop-filter: blur(40px) saturate(180%);
     -webkit-backdrop-filter: blur(40px) saturate(180%);
     transition: transform 0.2s ease;
   }
 
   .game-status {
-    font-size: 13px;
+    font-size: 16px;
     font-weight: 700;
-    margin-bottom: 8px;
-    line-height: 1.4;
+    margin-bottom: 10px;
+    line-height: 1.45;
     overflow-wrap: anywhere;
   }
 
@@ -266,52 +266,52 @@ HTML_TEMPLATE = '''
     aspect-ratio: 16 / 10;
     object-fit: cover;
     display: block;
-    border-radius: 10px;
-    margin-bottom: 10px;
+    border-radius: 12px;
+    margin-bottom: 14px;
   }
 
   .game-title {
-    font-size: 18px;
+    font-size: 22px;
     font-weight: 700;
-    margin-bottom: 8px;
-    line-height: 1.4;
+    margin-bottom: 10px;
+    line-height: 1.45;
     overflow-wrap: anywhere;
   }
 
   .game-desc {
-    font-size: 14px;
-    line-height: 1.7;
-    margin-bottom: 10px;
+    font-size: 17px;
+    line-height: 1.65;
+    margin-bottom: 14px;
     overflow-wrap: anywhere;
   }
 
   .game-price {
-    font-size: 14px;
+    font-size: 17px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     flex-wrap: wrap;
   }
 
   .price-original {
     text-decoration: line-through;
-    font-size: 14px;
+    font-size: 16px;
   }
 
   .price-current-free {
     font-weight: 700;
-    font-size: 15px;
+    font-size: 18px;
   }
 
   .price-current-upcoming {
     font-weight: 700;
-    font-size: 15px;
+    font-size: 18px;
   }
 
   .footer {
     text-align: center;
-    margin-top: 20px;
-    font-size: 11px;
+    margin-top: 24px;
+    font-size: 13px;
   }
 
   .empty-hint {
@@ -320,9 +320,9 @@ HTML_TEMPLATE = '''
     font-size: 14px;
     grid-column: 1 / -1;
   }
-  @media (max-width: 560px) {
-    body { padding: 16px; }
-    .game-grid { grid-template-columns: 1fr; gap: 18px; }
+  @media (max-width: 640px) {
+    body { padding: 18px; }
+    .game-grid { grid-template-columns: 1fr; gap: 20px; }
   }
 </style>
 </head>
@@ -628,7 +628,7 @@ class EpicFreeGamePlugin(Star):
                 raise
 
     async def _render_games_api(self, games: list[dict]) -> Comp.Image:
-        """使用框架 html_render 渲染，返回 URL 形式的 Image 组件"""
+        """使用框架 html_render 渲染，返回可直接发送的本地 Image 组件"""
         render_games = copy.deepcopy(games)
 
         for game in render_games:
@@ -651,22 +651,72 @@ class EpicFreeGamePlugin(Star):
 
         options = {
             "full_page": True,
-            "type": "jpeg",
-            "quality": 90,
+            "type": "png",
+            "device_scale_factor_level": "ultra",
             "animations": "disabled",
-            "timeout": 60_000,
+            "timeout": 30_000,
         }
 
-        # 使用 return_url=True（默认）获取框架托管的 HTTP URL
-        # QQ 适配器（NapCat/LLOneBot）要求通过 URL 传输富媒体
-        image_url = await self.html_render(
+        # 参考日报插件：获取本地图片数据/路径，避免 OneBot 无法访问临时 URL。
+        render_result = await self.html_render(
             HTML_TEMPLATE,
             render_data,
-            return_url=True,
+            return_url=False,
             options=options,
         )
 
-        return Comp.Image.fromURL(image_url)
+        return self._image_component_from_t2i_result(render_result)
+
+    @staticmethod
+    def _has_image_magic(data: bytes) -> bool:
+        return data.startswith(b"\x89PNG") or data.startswith(b"\xff\xd8")
+
+    @classmethod
+    def _image_component_from_t2i_result(
+        cls,
+        render_result: bytes | bytearray | str,
+    ) -> Comp.Image:
+        """Convert AstrBot T2I bytes/path output to a portable image component."""
+        if isinstance(render_result, (bytes, bytearray)):
+            image_data = bytes(render_result)
+            if not cls._has_image_magic(image_data):
+                raise RuntimeError("T2I renderer returned invalid image bytes")
+            encoded = base64.b64encode(image_data).decode("ascii")
+            return Comp.Image(file=f"base64://{encoded}")
+
+        if not isinstance(render_result, str) or not render_result:
+            raise RuntimeError("T2I renderer returned an empty or unsupported result")
+
+        if render_result.startswith("base64://"):
+            try:
+                image_data = base64.b64decode(render_result.removeprefix("base64://"))
+            except Exception as exc:
+                raise RuntimeError("T2I renderer returned invalid base64 data") from exc
+            if not cls._has_image_magic(image_data):
+                raise RuntimeError("T2I renderer returned non-image base64 data")
+            return Comp.Image(file=render_result)
+
+        if render_result.startswith(("http://", "https://")):
+            logger.warning(
+                "T2I renderer returned a URL despite return_url=False; "
+                "falling back to a URL image component"
+            )
+            return Comp.Image.fromURL(render_result)
+
+        image_path = Path(render_result)
+        if not image_path.is_file():
+            raise RuntimeError(f"T2I renderer returned a missing image path: {render_result}")
+
+        try:
+            with image_path.open("rb") as image_file:
+                header = image_file.read(10)
+        except OSError as exc:
+            raise RuntimeError(f"Unable to read T2I image: {image_path}") from exc
+
+        if not cls._has_image_magic(header):
+            raise RuntimeError("T2I renderer returned a non-image file")
+
+        return Comp.Image.fromFileSystem(str(image_path.resolve()))
 
     async def _download_cover_image(self, url: str):
         """下载封面图并返回 PIL Image 对象"""
