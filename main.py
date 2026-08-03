@@ -532,7 +532,7 @@ class EpicFreeGamePlugin(Star):
         logger.info("所有 API 均未返回游戏数据")
         return None
 
-        async def _sanitize_cover_url(self, url: str) -> str:
+    async def _sanitize_cover_url(self, url: str) -> str:
         """
         校验封面图 URL，防止 SSRF。
         兼容 TUN Fake IP 模式下的 198.18.0.0/15 地址，
