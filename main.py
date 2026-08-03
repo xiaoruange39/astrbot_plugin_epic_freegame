@@ -532,36 +532,102 @@ class EpicFreeGamePlugin(Star):
         logger.info("所有 API 均未返回游戏数据")
         return None
 
-    async def _sanitize_cover_url(self, url: str) -> str:
-        """校验封面图 URL，防止 SSRF 攻击（包含 DNS 级防护）"""
+        async def _sanitize_cover_url(self, url: str) -> str:
+        """
+        校验封面图 URL，防止 SSRF。
+        兼容 TUN Fake IP 模式下的 198.18.0.0/15 地址，
+        但只对可信的 Epic 官方图片域名放行。
+        """
         if not url or not isinstance(url, str):
             return ""
+
         try:
             parsed = urlparse(url)
-            # 仅允许 https 协议
+
+            # 只允许 HTTPS
             if parsed.scheme != "https":
                 return ""
+
             hostname = parsed.hostname or ""
-            # 拒绝常见本地/内网回环域名
-            blocked_hostnames = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
-            hostname_lower = hostname.lower()
-            if hostname_lower in blocked_hostnames or hostname_lower.endswith(".local"):
+            hostname_lower = hostname.lower().rstrip(".")
+
+            # 拒绝本机及本地域名
+            blocked_hostnames = {
+                "localhost",
+                "localhost.localdomain",
+                "ip6-localhost",
+                "ip6-loopback",
+            }
+
+            if (
+                hostname_lower in blocked_hostnames
+                or hostname_lower.endswith(".local")
+            ):
                 return ""
-            # DNS 解析获取真实 IP，防假公网域名指向内网 (预防 DNS Rebinding)
+
+            # 允许使用 TUN Fake IP 的可信封面域名
+            trusted_cover_domains = (
+                "epicgames.com",
+                "unrealengine.com",
+            )
+
+            is_trusted_cover_host = any(
+                hostname_lower == domain
+                or hostname_lower.endswith("." + domain)
+                for domain in trusted_cover_domains
+            )
+
+            # Clash / Mihomo 等软件常用的 Fake IP 地址段
+            fake_ip_network = ipaddress.ip_network("198.18.0.0/15")
+
             try:
                 loop = asyncio.get_running_loop()
                 addr_info = await loop.getaddrinfo(hostname, None)
-                for res in addr_info:
-                    ip_str = res[4][0]
+
+                for result in addr_info:
+                    ip_str = result[4][0]
                     ip = ipaddress.ip_address(ip_str)
-                    # 严防全系非公网通信地址
-                    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified or not getattr(ip, 'is_global', True):
+
+                    # TUN Fake IP：仅对 Epic 官方相关域名放行
+                    if (
+                        ip.version == 4
+                        and ip in fake_ip_network
+                    ):
+                        if is_trusted_cover_host:
+                            continue
+
+                        logger.warning(
+                            f"拒绝非可信域名的 Fake IP 地址: "
+                            f"{hostname_lower} -> {ip}"
+                        )
                         return ""
-            except Exception:
-                # 解析失败或无效记录，直接拒绝
+
+                    # 其他地址仍执行原来的安全检查
+                    if (
+                        ip.is_private
+                        or ip.is_loopback
+                        or ip.is_link_local
+                        or ip.is_reserved
+                        or ip.is_multicast
+                        or ip.is_unspecified
+                        or not getattr(ip, "is_global", True)
+                    ):
+                        logger.warning(
+                            f"封面地址被安全检查拦截: "
+                            f"{hostname_lower} -> {ip}"
+                        )
+                        return ""
+
+            except Exception as exc:
+                logger.warning(
+                    f"封面域名解析失败: {hostname_lower}: {exc}"
+                )
                 return ""
+
             return url
-        except Exception:
+
+        except Exception as exc:
+            logger.warning(f"封面 URL 校验失败: {url}: {exc}")
             return ""
 
     # ==================== 渲染 ====================
