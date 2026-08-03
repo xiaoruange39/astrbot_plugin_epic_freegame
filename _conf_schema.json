@@ -1,10 +1,13 @@
 {
-    "api_url": {
-        "description": "API 地址",
-        "type": "string",
-        "hint": "Epic 免费游戏数据接口地址，默认使用 60s API。支持自动回退备用 API，一般无需修改。",
+    "api_urls": {
+        "description": "API 地址列表",
+        "type": "list",
+        "hint": "Epic 免费游戏数据接口地址列表，会按顺序请求并在失败时自动尝试下一个。请到 https://docs.60s-api.viki.moe/7306811m0 获取公共 API 或自建 API。",
         "obvious_hint": true,
-        "default": "https://60s.viki.moe/v2/epic"
+        "default": [
+            "https://60s.viki.moe/v2/epic",
+            "https://api.60s.viki.moe/v2/epic"
+        ]
     },
     "cron_time": {
         "description": "定时推送",

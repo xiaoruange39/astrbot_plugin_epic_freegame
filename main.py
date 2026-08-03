@@ -379,7 +379,12 @@ class EpicFreeGamePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self.api_url: str = config.get("api_url", "https://60s.viki.moe/v2/epic")
+        api_urls_raw = config.get("api_urls", [])
+        legacy_api_url = config.get("api_url", "")
+        self.api_urls: list[str] = self._normalize_api_urls(api_urls_raw)
+        for api_url in self._normalize_api_urls(legacy_api_url):
+            if api_url not in self.api_urls:
+                self.api_urls.insert(0, api_url)
         self.cron_time: str = config.get("cron_time", "")
         self.enable_cache: bool = config.get("enable_cache", True)
         self.dark_mode: bool = config.get("dark_mode", True)
@@ -474,12 +479,33 @@ class EpicFreeGamePlugin(Star):
                 )
             return self._http_session
 
+    @staticmethod
+    def _normalize_api_urls(value) -> list[str]:
+        """Normalize API URL config from list, comma-separated, or newline-separated input."""
+        if isinstance(value, str):
+            candidates = re.split(r"[\n,，;；]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            candidates = []
+            for item in value:
+                if isinstance(item, str):
+                    candidates.extend(re.split(r"[\n,，;；]+", item))
+        else:
+            candidates = []
+
+        urls: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            url = candidate.strip()
+            if url and url not in seen:
+                urls.append(url)
+                seen.add(url)
+        return urls
+
     async def _fetch_games(self) -> list[dict] | None:
         """从 API 获取 Epic 免费游戏数据，支持备用 API 自动回退"""
         # 构建尝试顺序：用户配置的 API 优先，然后是备用 API
         apis_to_try = []
-        if self.api_url:
-            apis_to_try.append(self.api_url)
+        apis_to_try.extend(self.api_urls)
         for api in self.FALLBACK_APIS:
             if api not in apis_to_try:
                 apis_to_try.append(api)

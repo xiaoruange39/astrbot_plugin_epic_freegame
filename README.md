@@ -38,7 +38,7 @@ https://github.com/xiaoruange39/astrbot_plugin_epic_freegame
 
 | 配置项 | 类型 | 说明 | 默认值 |
 |--------|------|------|--------|
-| `api_url` | string | Epic 免费游戏 API 地址 | `https://60s.viki.moe/v2/epic` |
+| `api_urls` | list | Epic 免费游戏 API 地址列表，按顺序请求并自动回退。请到 https://docs.60s-api.viki.moe/7306811m0 获取公共 API 或自建 API | `['https://60s.viki.moe/v2/epic', 'https://api.60s.viki.moe/v2/epic']` |
 | `cron_time` | string | 定时推送 Cron 表达式，为空则不启用 | 空 |
 | `enable_cache` | bool | 启用缓存对比，避免重复推送 | `true` |
 | `dark_mode` | bool | 深色模式开关 | `true` |
