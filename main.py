@@ -154,22 +154,33 @@ T2I_INITIAL_VIEWPORT_HEIGHT = 800
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="{{ theme }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
+  html { min-height: 100%; }
+
   body {
     font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Droid Sans Fallback", "SimHei", "Helvetica Neue", Arial, sans-serif;
-    padding: 24px;
+    padding: 0;
     width: 600px;
+    min-height: 100%;
+    overflow-x: hidden;
+  }
+
+  .app {
+    width: 600px;
+    padding: 24px;
+    margin: 0;
+    background: transparent;
   }
 
   /* ========== 浅色模式 ========== */
-  body.light {
-    background: linear-gradient(145deg, #e8eaf0, #dde1ea, #d0d5e0);
+  html.light, body.light {
+    background: #e8eaf0 linear-gradient(145deg, #e8eaf0, #dde1ea, #d0d5e0);
     color: #333;
   }
 
@@ -194,8 +205,8 @@ HTML_TEMPLATE = '''
   body.light .empty-hint { color: #999; }
 
   /* ========== 深色模式 (Steam 风格) ========== */
-  body.dark {
-    background: linear-gradient(145deg, #171a21, #1b2838, #1e2d40);
+  html.dark, body.dark {
+    background: #171a21 linear-gradient(145deg, #171a21, #1b2838, #1e2d40);
     color: #c7d5e0;
   }
 
@@ -317,6 +328,7 @@ HTML_TEMPLATE = '''
 </style>
 </head>
 <body class="{{ theme }}">
+<div class="app">
   <div class="header">
     <h1>Epic免费游戏</h1>
   </div>
@@ -357,6 +369,7 @@ HTML_TEMPLATE = '''
   <div class="footer">
     Epic Games 周免游戏推送 · by xiaoruange39 · Powered by AstrBot
   </div>
+</div>
 </body>
 </html>
 '''
@@ -797,10 +810,24 @@ class EpicFreeGamePlugin(Star):
                     timeout=30_000,
                 )
                 await self._wait_for_browser_assets(page)
-                body = await page.query_selector("body")
-                if body is None:
-                    raise RuntimeError("浏览器页面中没有 body 元素")
-                return await body.screenshot(type="png", animations="disabled")
+
+                # 参考 message_stats: 动态同步视口以实现高清无留白截图
+                rect = await page.evaluate("""
+                    () => {
+                        const el = document.querySelector('.app') || document.body;
+                        return {
+                            width: Math.ceil(el.offsetWidth),
+                            height: Math.ceil(el.offsetHeight)
+                        };
+                    }
+                """)
+                await page.set_viewport_size({"width": rect["width"], "height": rect["height"]})
+                return await page.screenshot(
+                    type="png", 
+                    full_page=True, 
+                    animations="disabled",
+                    omit_background=True
+                )
             finally:
                 if browser is not None:
                     await browser.close()
@@ -870,14 +897,33 @@ class EpicFreeGamePlugin(Star):
 
     @staticmethod
     def _crop_t2i_to_browser_width(data: bytes, css_width: int) -> bytes:
-        """裁掉 T2I 默认 1280px 页面右侧区域，高度保持浏览器自然高度。"""
+        """裁掉 T2I 默认宽页面右侧区域，高度保持浏览器自然高度。支持检测并保持 Device Scale Factor。"""
         if not HAS_PILLOW or css_width <= 0:
             return data
         try:
             with PILImage.open(io.BytesIO(data)) as image:
-                if image.width <= css_width:
+                # 自动计算倍率（例如 1200 / 600 = 2.0x）
+                scale = max(1.0, image.width / 1280.0) if image.width > 800 else 1.0
+                # 如果是针对特定的 T2I 浏览器模拟，通常宽度是 1280px
+                # 但如果渲染器直接返回了 2x 的 600px 页面（1200px），我们需要处理
+                
+                # 策略：如果图片宽度远大于目标 CSS 宽度，尝试检测倍率
+                target_px_width = css_width
+                if image.width >= css_width * 1.5:
+                    # 极大概率是 2x 甚至更高倍率的截图
+                    # 检查是否是 2x (1200) 或默认 1280
+                    if abs(image.width - 1200) < 50: # Playwright 2x
+                        target_px_width = css_width * 2
+                    elif image.width >= 1280: # AstrBot Default T2I
+                        # 在 1280px 容器里，内容只占左侧 css_width
+                        # 如果是 2x 的 1280 (2560)，则需要对应倍率
+                        scale = image.width / 1280.0
+                        target_px_width = int(css_width * scale)
+                
+                if image.width <= target_px_width:
                     return data
-                cropped = image.crop((0, 0, css_width, image.height))
+                
+                cropped = image.crop((0, 0, target_px_width, image.height))
                 output = io.BytesIO()
                 if data.startswith(b"\xff\xd8"):
                     cropped.convert("RGB").save(
