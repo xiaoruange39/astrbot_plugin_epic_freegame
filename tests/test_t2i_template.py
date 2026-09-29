@@ -2,9 +2,12 @@ import ast
 import base64
 import copy
 import io
+import ipaddress
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     from PIL import Image as PILImage
@@ -102,6 +105,17 @@ class _FakeLogger:
         pass
 
 
+class _FakeResolverLoop:
+    def __init__(self, addresses):
+        self.addresses = addresses
+
+    async def getaddrinfo(self, _hostname, _port):
+        return [
+            (None, None, None, "", (address, 0))
+            for address in self.addresses
+        ]
+
+
 def _render_result_helper(tree: ast.Module):
     plugin_class = next(
         node
@@ -138,6 +152,42 @@ def _render_result_helper(tree: ast.Module):
     }
     exec(compile(module, str(MAIN_PATH), "exec"), namespace)
     return namespace["RenderResultHelper"]
+
+
+def _sanitize_cover_helper(tree: ast.Module, addresses):
+    plugin_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "EpicFreeGamePlugin"
+    )
+    methods = [
+        copy.deepcopy(node)
+        for node in plugin_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_sanitize_cover_url"
+    ]
+    helper_class = ast.ClassDef(
+        name="CoverUrlHelper",
+        bases=[],
+        keywords=[],
+        body=methods,
+        decorator_list=[],
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[helper_class], type_ignores=[]))
+    ranges = _module_constant(tree, "TUN_FAKE_IP_RANGES")
+    namespace = {
+        "asyncio": types.SimpleNamespace(
+            get_running_loop=lambda: _FakeResolverLoop(addresses)
+        ),
+        "ipaddress": ipaddress,
+        "logger": _FakeLogger,
+        "TUN_FAKE_IP_NETWORKS": tuple(
+            ipaddress.ip_network(network) for network in ranges
+        ),
+        "urlparse": urlparse,
+    }
+    exec(compile(module, str(MAIN_PATH), "exec"), namespace)
+    return namespace["CoverUrlHelper"]()
 
 
 class T2ITemplateTests(unittest.TestCase):
@@ -264,6 +314,34 @@ class T2ITemplateTests(unittest.TestCase):
         result = base64.b64decode(component.file.removeprefix("base64://"))
         with PILImage.open(io.BytesIO(result)) as cropped:
             self.assertEqual(cropped.size, (600, 321))
+
+
+class CoverUrlSafetyTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tree = _parse_main()
+
+    async def test_trusted_epic_cover_allows_ipv6_tun_fake_ip(self):
+        helper = _sanitize_cover_helper(self.tree, ["2001:2::4"])
+        url = "https://cdn1.epicgames.com/game/cover.jpg"
+
+        self.assertEqual(await helper._sanitize_cover_url(url), url)
+
+    async def test_untrusted_cover_rejects_ipv6_tun_fake_ip(self):
+        helper = _sanitize_cover_helper(self.tree, ["2001:2::4"])
+
+        self.assertEqual(
+            await helper._sanitize_cover_url("https://example.com/cover.jpg"),
+            "",
+        )
+
+    async def test_trusted_epic_cover_still_rejects_private_ipv6(self):
+        helper = _sanitize_cover_helper(self.tree, ["fd00::4"])
+
+        self.assertEqual(
+            await helper._sanitize_cover_url("https://cdn1.epicgames.com/cover.jpg"),
+            "",
+        )
 
 
 if __name__ == "__main__":

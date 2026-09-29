@@ -151,6 +151,13 @@ def _wrap_text(text: str, font, max_width: int, max_lines: int | None = 2) -> li
 # 由浏览器根据卡片内容计算，不在代码中固定。
 T2I_BROWSER_WIDTH = 600
 T2I_INITIAL_VIEWPORT_HEIGHT = 800
+TUN_FAKE_IP_RANGES = (
+    "198.18.0.0/15",
+    "2001:2::/48",
+)
+TUN_FAKE_IP_NETWORKS = tuple(
+    ipaddress.ip_network(network) for network in TUN_FAKE_IP_RANGES
+)
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -574,7 +581,7 @@ class EpicFreeGamePlugin(Star):
     async def _sanitize_cover_url(self, url: str) -> str:
         """
         校验封面图 URL，防止 SSRF。
-        兼容 TUN Fake IP 模式下的 198.18.0.0/15 地址，
+        兼容 TUN Fake IP 模式下的 IPv4/IPv6 Fake IP 地址，
         但只对可信的 Epic 官方图片域名放行。
         """
         if not url or not isinstance(url, str):
@@ -616,9 +623,6 @@ class EpicFreeGamePlugin(Star):
                 for domain in trusted_cover_domains
             )
 
-            # Clash / Mihomo 等软件常用的 Fake IP 地址段
-            fake_ip_network = ipaddress.ip_network("198.18.0.0/15")
-
             try:
                 loop = asyncio.get_running_loop()
                 addr_info = await loop.getaddrinfo(hostname, None)
@@ -628,10 +632,7 @@ class EpicFreeGamePlugin(Star):
                     ip = ipaddress.ip_address(ip_str)
 
                     # TUN Fake IP：仅对 Epic 官方相关域名放行
-                    if (
-                        ip.version == 4
-                        and ip in fake_ip_network
-                    ):
+                    if any(ip in network for network in TUN_FAKE_IP_NETWORKS):
                         if is_trusted_cover_host:
                             continue
 
